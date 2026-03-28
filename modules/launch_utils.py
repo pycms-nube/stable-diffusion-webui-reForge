@@ -28,6 +28,7 @@ logging_config.setup_logging(args.loglevel)
 python = sys.executable
 git = os.environ.get('GIT', "git")
 index_url = os.environ.get('INDEX_URL', "")
+uv = shutil.which("uv") or "uv"
 dir_repos = "repositories"
 
 # Whether to default to printing command output
@@ -139,11 +140,17 @@ def repo_dir(name):
     return os.path.join(script_path, dir_repos, name)
 
 
+def _use_uv():
+    return getattr(args, 'use_uv', False) or os.environ.get('USE_UV') == '1'
+
+
 def run_pip(command, desc=None, live=default_command_live):
     if args.skip_install:
         return
 
     index_url_line = f' --index-url {index_url}' if index_url != '' else ''
+    if _use_uv():
+        return run(f'"{uv}" pip {command} --python "{python}"{index_url_line}', desc=f"Installing {desc}", errdesc=f"Couldn't install {desc}", live=live)
     return run(f'"{python}" -m pip {command} --prefer-binary{index_url_line}', desc=f"Installing {desc}", errdesc=f"Couldn't install {desc}", live=live)
 
 
@@ -430,7 +437,11 @@ def prepare_environment():
     print(f"Commit hash: {commit}")
 
     if args.reinstall_torch or not is_installed("torch") or not is_installed("torchvision"):
-        run(f'"{python}" -m {torch_command}', "Installing torch and torchvision", "Couldn't install torch", live=True)
+        if _use_uv():
+            uv_torch_command = torch_command.replace("pip install", f'"{uv}" pip install --python "{python}"', 1)
+            run(uv_torch_command, "Installing torch and torchvision", "Couldn't install torch", live=True)
+        else:
+            run(f'"{python}" -m {torch_command}', "Installing torch and torchvision", "Couldn't install torch", live=True)
         startup_timer.record("install torch")
 
     if args.use_ipex:
