@@ -246,6 +246,107 @@ mapping.
 
 ---
 
+---
+
+## Bug Fix — Wrapper Not Dispatched at Sampling Time
+
+### Symptom
+
+`DiffPipeline.apply_model()` was never called despite the wrapper being registered
+at model load time.  Generation ran silently through the ldm UNet.
+
+### Root Cause (discovered 2026-04-04)
+
+`KDiffusionSampler` (and other sampler classes) cache a reference to the
+`CompVisDenoiser` the first time `CFGDenoiserKDiffusion.inner_model` is accessed:
+
+```python
+# modules/sd_samplers_kdiffusion.py — CFGDenoiserKDiffusion
+@property
+def inner_model(self):
+    if self.model_wrap is None:
+        self.model_wrap = denoiser(shared.sd_model, ...)   # captured once
+    return self.model_wrap
+```
+
+When a model is loaded, `shared.sd_model` is **replaced** with a new Python
+object (a fresh `ForgeSD` / ldm model).  The sampler's cached denoiser still
+holds a reference to the **old** sd_model.  Both objects are alive, so no error
+is raised.
+
+At sampling time, `self.model_wrap.inner_model.forge_objects.unet` therefore
+resolves to the *old* model's UnetPatcher — a different Python object from the
+one that received `add_wrapper_with_key()` in `forge_loader.py`.
+
+Confirmed with `id()` tracing:
+
+```
+[forge_loader]     wrapper on unet id=…393072   wrappers=['apply_model']
+[processing:1041]  forge_objects.unet id=…393072  ← correct
+[processing:1463]  forge_objects.unet id=…393072  ← still correct
+[kdiffusion.sample] unet id=…969088 wrappers=[]  ← STALE object, no wrapper
+[sampling_prepare]  unet id=…969088 wrappers=[]  ← same stale object
+```
+
+### Fix — `_ensure_diffusers_wrapper()` in `modules_forge/forge_sampler.py`
+
+Rather than relying on the wrapper being present from load time, re-register it
+lazily in `sampling_prepare()` on the exact UnetPatcher instance received:
+
+```python
+# modules_forge/forge_sampler.py
+
+def _ensure_diffusers_wrapper(unet):
+    key = patcher_extension.WrappersMP.APPLY_MODEL
+    if "forge_diffusers" in unet.wrappers.get(key, {}):
+        return  # already present — idempotent guard
+
+    from modules import sd_models
+    _dp = getattr(sd_models.model_data.get_sd_model(), "diff_pipeline", None)
+    if _dp is None:
+        return
+
+    def _diff_apply_model_wrapper(executor, x, t, ...):
+        return _dp.apply_model(x, t, ...)
+
+    unet.add_wrapper_with_key(key, "forge_diffusers", _diff_apply_model_wrapper)
+
+def sampling_prepare(unet, x):
+    ...
+    _ensure_diffusers_wrapper(unet)   # ← lazy re-registration
+
+    # Propagate wrappers into transformer_options for _calc_cond_batch
+    unet.model_options.setdefault("transformer_options", {})["wrappers"] = \
+        patcher_extension.copy_nested_dicts(unet.wrappers)
+    ...
+```
+
+The wrapper propagation into `transformer_options` was the *other* half of the
+original fix (already committed before this investigation): `BaseModel.apply_model()`
+reads wrappers from `transformer_options["wrappers"]`, not from `unet.wrappers`
+directly.  Both halves are required.
+
+### Additional fixes in the same session
+
+| File | Change |
+|---|---|
+| [modules_forge/forge_sampler.py](modules_forge/forge_sampler.py) | `sampling_cleanup()` now pops `transformer_options["wrappers"]` to prevent stale state on model switch |
+| [ldm_patched/modules/model_base.py](ldm_patched/modules/model_base.py) | Replaced `print()` debug with `logging.debug()` conditional on wrappers present |
+| [diff_pipeline/pipeline.py](diff_pipeline/pipeline.py) | Added `log.debug()` entry in `apply_model()` for per-step tracing |
+
+### Verification
+
+Both plain and LoRA generation completed without errors.  The HF Diffusers
+attention path was confirmed active by the
+`cross_attention_kwargs ['transformer_options'] are not expected by AttnProcessor2_0`
+warning — this fires because the default `AttnProcessor2_0` receives
+`transformer_options` via `cross_attention_kwargs` before `ForgeAttnProcessor`
+takes over.  (Phase 4 note: this warning will disappear once `ForgeAttnProcessor`
+is installed on `attn1` as well, or once the passthrough is filtered at the
+`DiffPipeline` level.)
+
+---
+
 ## Key Files Quick Reference
 
 | File | Change |
@@ -256,3 +357,4 @@ mapping.
 | [modules/cmd_args.py:152](modules/cmd_args.py#L152) | `--forge-diffusers-pipeline` flag |
 | [requirements.txt](requirements.txt) | Added `diffusers` |
 | [ldm_patched/modules/utils.py:266](ldm_patched/modules/utils.py#L266) | `unet_to_diffusers()` — key map reused at construction (no change) |
+| [modules_forge/forge_sampler.py](modules_forge/forge_sampler.py) | `_ensure_diffusers_wrapper()` + wrapper propagation + cleanup |

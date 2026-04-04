@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 import torch.nn.functional as F
+from ldm_patched.modules.model_base import SDXL
 
 if TYPE_CHECKING:
     from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
@@ -150,6 +151,7 @@ class ForgeAttnProcessor:
         self.block_name = block_name
         self.block_idx = block_idx
         self.transformer_idx = transformer_idx
+        
 
     def __call__(
         self,
@@ -278,7 +280,7 @@ class ForgeAttnProcessor:
 # DiffPipeline
 # ---------------------------------------------------------------------------
 
-class DiffPipeline:
+class DiffPipeline():
     """Diffusers-based SDXL pipeline.
 
     Wraps a ``UnetPatcher`` and replaces the ldm-patched
@@ -506,8 +508,31 @@ class DiffPipeline:
         """
         from ldm_patched.modules.weight_adapter.lora import LoRAAdapter
 
-        patches = getattr(self.unet_patcher, "patches", {})
-        patches_uuid = getattr(self.unet_patcher, "patches_uuid", None)
+        # The sampler clones the unet_patcher and adds LoRA patches to the clone,
+        # giving it a new patches_uuid.  self.unet_patcher still points to the
+        # original (unpatched) patcher whose uuid never changes.  Use
+        # model.current_patcher (set by ModelPatcher.pre_run() to the active clone)
+        # so we see the real patch state.
+        # forge_objects.unet is updated by LoRA loading (networks.py clones + patches it).
+        # self.unet_patcher is the original at init time and never gets LoRA patches.
+        # current_patcher is only set by ModelPatcher.pre_run(), which is NOT called in
+        # the k-diffusion sampler path — so we cannot rely on it.
+        # Reading forge_objects.unet directly gives us the live, LoRA-patched patcher.
+        forge_objects = getattr(self.sd_model, "forge_objects", None)
+        active_patcher = (
+            forge_objects.unet
+            if forge_objects is not None and getattr(forge_objects, "unet", None) is not None
+            else self.unet_patcher
+        )
+
+        patches = getattr(active_patcher, "patches", {})
+        patches_uuid = getattr(active_patcher, "patches_uuid", None)
+
+        log.warning(
+            "[_sync_lora] active_patcher id=%d patches_keys=%d patches_uuid=%s synced_uuid=%s same=%s",
+            id(active_patcher), len(patches), patches_uuid, self._synced_patches_uuid,
+            patches_uuid == self._synced_patches_uuid,
+        )
 
         if patches_uuid == self._synced_patches_uuid:
             return   # nothing changed
@@ -535,15 +560,15 @@ class DiffPipeline:
                 if hf_key is None:
                     continue
 
-                mat1 = adapter.weights[0]   # lora_up.weight  → PEFT lora_B
-                mat2 = adapter.weights[1]   # lora_down.weight → PEFT lora_A
-                alpha = adapter.weights[2]  # scalar or None
-                r = mat2.shape[0]
+                lora_up   = adapter.weights[0]  # lora_up.weight   → PEFT lora_B  [out, r]
+                lora_down = adapter.weights[1]  # lora_down.weight → PEFT lora_A  [r, in]
+                alpha = adapter.weights[2]      # scalar or None
+                r = lora_down.shape[0]
                 alpha_val = float(alpha) if alpha is not None else float(r)
 
                 module_path = hf_key[: -len(".weight")]
-                state_dict[f"{module_path}.lora_A.weight"] = mat2
-                state_dict[f"{module_path}.lora_B.weight"] = mat1
+                state_dict[f"{module_path}.lora_A.weight"] = lora_down
+                state_dict[f"{module_path}.lora_B.weight"] = lora_up
                 network_alphas[module_path] = alpha_val
 
                 if adapter_strength is None:
@@ -559,12 +584,19 @@ class DiffPipeline:
                 adapter_name=adapter_name,
                 low_cpu_mem_usage=False,
             )
+            
+
             self._active_adapters.append((adapter_name, adapter_strength or 1.0))
 
         if self._active_adapters:
             names = [n for n, _ in self._active_adapters]
             weights = [w for _, w in self._active_adapters]
-            self._hf_unet.set_adapters(names, adapter_weights=weights)
+            self._hf_unet.set_adapters(names, weights)
+            # This provide general Torch compile capibability by fusing
+            self._hf_unet.fuse_lora(adapter_names=names, lora_scale=1.0)
+            log.warning("DIFFUSER NOW FUSE LORA INTO U-NET")
+            
+            log.warning("No LORAS UNLOAD, NOT HOTSWAP")
 
     # ------------------------------------------------------------------
     # Public interface (mirrors BaseModel.apply_model signature)
@@ -587,6 +619,8 @@ class DiffPipeline:
         """
         if transformer_options is None:
             transformer_options = {}
+
+        log.debug("[DiffPipeline] apply_model called — sigma=%s, x.shape=%s", t, x.shape)
 
         sigma = t
 

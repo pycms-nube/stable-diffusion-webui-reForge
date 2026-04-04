@@ -151,10 +151,13 @@ class BaseModel(torch.nn.Module):
         self.memory_usage_factor_conds = ()
 
     def apply_model(self, x, t, c_concat=None, c_crossattn=None, control=None, transformer_options={}, **kwargs):
+        _wrappers = ldm_patched.modules.patcher_extension.get_all_wrappers(ldm_patched.modules.patcher_extension.WrappersMP.APPLY_MODEL, transformer_options)
+        if _wrappers:
+            logging.debug("[model_base] apply_model dispatching wrappers=%s", [getattr(w, '__name__', repr(w)) for w in _wrappers])
         return ldm_patched.modules.patcher_extension.WrapperExecutor.new_class_executor(
             self._apply_model,
             self,
-            ldm_patched.modules.patcher_extension.get_all_wrappers(ldm_patched.modules.patcher_extension.WrappersMP.APPLY_MODEL, transformer_options)
+            _wrappers
         ).execute(x, t, c_concat, c_crossattn, control, transformer_options, **kwargs)
 
     def _apply_model(self, x, t, c_concat=None, c_crossattn=None, control=None, transformer_options={}, **kwargs):
