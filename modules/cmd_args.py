@@ -149,3 +149,33 @@ parser.add_argument(
     help="Path to directory with annotator model directories",
     default=None,
 )
+parser.add_argument(
+    "--forge-diffusers-pipeline",
+    action="store_true",
+    help="Enable experimental Diffusers-based pipeline for SDXL models (WIP; see diff_pipeline/)",
+    default=False,
+)
+parser.add_argument(
+    "--forge-diffusers-offload",
+    action="store_true",
+    help="When using --forge-diffusers-pipeline, move the whole HF UNet back to CPU after "
+         "each sampling step to save VRAM. Adds one full transfer per step.",
+    default=False,
+)
+parser.add_argument(
+    "--forge-diffusers-sequential-offload",
+    action="store_true",
+    help="When using --forge-diffusers-pipeline, use accelerate per-block CPU offload: "
+         "each UNet block moves to GPU just before its forward pass and returns to CPU "
+         "immediately after (peak VRAM ≈ largest single block). Slower than "
+         "--forge-diffusers-offload but uses significantly less VRAM. "
+         "Takes precedence over --forge-diffusers-offload if both are set.",
+    default=False,
+)
+parser.add_argument(
+    "--allow-download",
+    action="store_true",
+    help="Allow huggingface_hub / diffusers / transformers to download files from the internet. "
+         "By default all network fetches are blocked; only locally cached files are used.",
+    default=False,
+)

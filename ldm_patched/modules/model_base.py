@@ -442,6 +442,26 @@ class SDXL(BaseModel):
         self.embedder = Timestep(256)
         self.noise_augmentor = CLIPEmbeddingNoiseAugmentation(**{"noise_schedule_config": {"timesteps": 1000, "beta_schedule": "squaredcos_cap_v2"}, "timestep_dim": 1280})
 
+    def extra_conds(self, **kwargs):
+        out = super().extra_conds(**kwargs)
+        # Store raw ADM components alongside the pre-embedded 'y' so the
+        # Diffusers pipeline path can build added_cond_kwargs without
+        # having to invert the Fourier embedding of encode_adm().
+        clip_pooled = sdxl_pooled(kwargs, self.noise_augmentor)
+        width = kwargs.get("width", 768)
+        height = kwargs.get("height", 768)
+        crop_w = kwargs.get("crop_w", 0)
+        crop_h = kwargs.get("crop_h", 0)
+        target_width = kwargs.get("target_width", width)
+        target_height = kwargs.get("target_height", height)
+        time_ids = torch.tensor(
+            [[height, width, crop_h, crop_w, target_height, target_width]],
+            dtype=clip_pooled.dtype,
+        ).repeat(clip_pooled.shape[0], 1)
+        out["adm_text_embeds"] = ldm_patched.modules.conds.CONDRegular(clip_pooled)
+        out["adm_time_ids"] = ldm_patched.modules.conds.CONDRegular(time_ids)
+        return out
+
     def encode_adm(self, **kwargs):
         clip_pooled = sdxl_pooled(kwargs, self.noise_augmentor)
         width = kwargs.get("width", 768)

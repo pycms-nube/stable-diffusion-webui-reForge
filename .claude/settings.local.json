@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/analyze.py symbols ldm_patched/modules/model_base.py)"
+    ]
+  }
+}

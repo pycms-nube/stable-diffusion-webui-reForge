@@ -273,7 +273,7 @@ def list_models():
     checkpoint_aliases.clear()
 
     cmd_ckpt = shared.cmd_opts.ckpt
-    if shared.cmd_opts.no_download_sd_model or cmd_ckpt != shared.sd_model_file or os.path.exists(cmd_ckpt):
+    if shared.cmd_opts.no_download_sd_model or not getattr(shared.cmd_opts, 'allow_download', False) or cmd_ckpt != shared.sd_model_file or os.path.exists(cmd_ckpt):
         model_url = None
         expected_sha256 = None
     else:
