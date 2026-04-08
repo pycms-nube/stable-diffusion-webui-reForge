@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import time
+
+from fastapi.middleware import Middleware
 
 from modules import timer
 from modules import initialize_util
 from modules import initialize
 from threading import Thread
+from modules.api.api import Api
+from modules.api.api import Api
 from modules_forge.initialization import initialize_forge
 from modules_forge import main_thread
 
 
-startup_timer = timer.startup_timer
+startup_timer: timer.Timer = timer.startup_timer
 startup_timer.record("launcher")
 
 initialize_forge()
@@ -23,7 +28,7 @@ initialize.check_versions()
 initialize.initialize()
 
 
-def create_api(app):
+def create_api(app) -> Api:
     from modules.api.api import Api
     from modules.call_queue import queue_lock
 
@@ -31,13 +36,13 @@ def create_api(app):
     return api
 
 
-def api_only_worker():
+def api_only_worker() -> None:
     from fastapi import FastAPI
     from modules.shared_cmd_options import cmd_opts
 
     app = FastAPI()
     initialize_util.setup_middleware(app)
-    api = create_api(app)
+    api: Api = create_api(app)
 
     from modules import script_callbacks
     script_callbacks.before_ui_callback()
@@ -50,7 +55,17 @@ def api_only_worker():
         root_path=f"/{cmd_opts.subpath}" if cmd_opts.subpath else ""
     )
 
-def warning_if_invalid_install_dir():
+
+def abspath(path):
+    """modified from Gradio 3.41.2 gradio.utils.abspath()"""
+    if path.is_absolute():
+        return path
+    is_symlink = path.is_symlink() or any(parent.is_symlink()
+                                          for parent in path.parents)
+    return Path.cwd() / path if (is_symlink or path == path.resolve()) else path.resolve()
+
+
+def warning_if_invalid_install_dir() -> None:
     """
     Shows a warning if the webui is installed under a path that contains a leading dot in any of its parent directories.
     Gradio '/file=' route will block access to files that have a leading dot in the path segments.
@@ -65,23 +80,24 @@ def warning_if_invalid_install_dir():
     from pathlib import Path
     import gradio
     if parse('3.32.0') <= parse(gradio.__version__) < parse('4'):
-        def abspath(path):
-            """modified from Gradio 3.41.2 gradio.utils.abspath()"""
-            if path.is_absolute():
-                return path
-            is_symlink = path.is_symlink() or any(parent.is_symlink() for parent in path.parents)
-            return Path.cwd() / path if (is_symlink or path == path.resolve()) else path.resolve()
-        webui_root = Path(__file__).parent
-        if any(part.startswith(".") for part in abspath(webui_root).parts):
-            print(f'''{"!"*25} Warning {"!"*25}
-WebUI is installed in a directory that has a leading dot (.) in one of its parent directories.
-This will prevent WebUI from functioning properly.
-Please move the installation to a different directory.
-Current path: "{webui_root}"
-For more information see: https://github.com/AUTOMATIC1111/stable-diffusion-webui/issues/13292
-{"!"*25} Warning {"!"*25}''')
 
-def webui_worker():
+        webui_root: Path = Path(__file__).parent
+        # TODO: Unkown error
+        if any(part.startswith(".") for part in abspath(webui_root).parts):
+            pass
+            """
+            print(f'''{"!"*25} Warning {"!"*25}
+                  WebUI is installed in a directory that has a leading dot (.) in one of its parent directories.
+                  This will prevent WebUI from functioning properly.
+                  Please move the installation to a different directory.
+                  Current path: "{webui_root}"
+                  For more information see: https://github.com/AUTOMATIC1111/stable-diffusion-webui/issues/13292
+                  {"!"*25} Warning {"!"*25}''')
+                  """
+            
+
+
+def webui_worker() -> None:
     from modules.shared_cmd_options import cmd_opts
 
     launch_api = cmd_opts.api
@@ -104,14 +120,15 @@ def webui_worker():
         if not cmd_opts.no_gradio_queue:
             shared.demo.queue(64)
 
-        gradio_auth_creds = list(initialize_util.get_gradio_auth_creds()) or None
+        gradio_auth_creds: list[tuple[Any, ...] | tuple[str, ...]] | None = list(
+            initialize_util.get_gradio_auth_creds()) or None
 
         auto_launch_browser = False
         if os.getenv('SD_WEBUI_RESTARTING') != '1':
             if shared.opts.auto_launch_browser == "Remote" or cmd_opts.autolaunch:
                 auto_launch_browser = True
             elif shared.opts.auto_launch_browser == "Local":
-                auto_launch_browser = not cmd_opts.webui_is_non_local
+                auto_launch_browser: bool = not cmd_opts.webui_is_non_local
 
         app, local_url, share_url = shared.demo.launch(
             share=cmd_opts.share,
@@ -160,7 +177,8 @@ def webui_worker():
 
         try:
             while True:
-                server_command = shared.state.wait_for_server_command(timeout=5)
+                server_command: str | None = shared.state.wait_for_server_command(
+                    timeout=5)
                 if server_command:
                     if server_command in ("stop", "restart"):
                         break
@@ -190,11 +208,11 @@ def webui_worker():
         initialize.initialize_rest(reload_script_modules=True)
 
 
-def api_only():
+def api_only() -> None:
     Thread(target=api_only_worker, daemon=True).start()
 
-
-def webui():
+# This spawn the webui, notice that webui now in different thread
+def webui() -> None:
     Thread(target=webui_worker, daemon=True).start()
 
 
