@@ -13,7 +13,7 @@
 export COMMANDLINE_ARGS="--use-uv --forge-diffusers-pipeline"
 
 # python3 executable
-#python_cmd="python3"
+python_cmd="python3.11"
 
 # git executable
 #export GIT="git"

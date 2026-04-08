@@ -12,7 +12,7 @@ import gradio as gr
 from modules_forge import main_thread
 
 
-def txt2img_create_processing(id_task: str, request: gr.Request, prompt: str, negative_prompt: str, prompt_styles, n_iter: int, batch_size: int, cfg_scale: float, height: int, width: int, enable_hr: bool, denoising_strength: float, hr_scale: float, hr_upscaler: str, hr_second_pass_steps: int, hr_resize_x: int, hr_resize_y: int, hr_checkpoint_name: str, hr_sampler_name: str, hr_scheduler: str, hr_prompt: str, hr_negative_prompt, hr_cfg: float, override_settings_texts, *args, force_enable_hr=False):
+def txt2img_create_processing(id_task: str, request: gr.Request, prompt: str, negative_prompt: str, prompt_styles, n_iter: int, batch_size: int, cfg_scale: float, height: int, width: int, enable_hr: bool, denoising_strength: float, hr_scale: float, hr_upscaler: str, hr_second_pass_steps: int, hr_resize_x: int, hr_resize_y: int, hr_checkpoint_name: str, hr_sampler_name: str, hr_scheduler: str, hr_prompt: str, hr_negative_prompt, hr_cfg: float, override_settings_texts, *args, force_enable_hr: bool = False) -> processing.StableDiffusionProcessingTxt2Img:
     override_settings = create_override_settings_dict(override_settings_texts)
 
     if force_enable_hr:
@@ -61,7 +61,7 @@ def txt2img_upscale_function(id_task: str, request: gr.Request, gallery, gallery
     assert len(gallery) > 0, 'No image to upscale'
     assert 0 <= gallery_index < len(gallery), f'Bad image index: {gallery_index}'
 
-    p = txt2img_create_processing(id_task, request, *args, force_enable_hr=True)
+    p: processing.StableDiffusionProcessingTxt2Img = txt2img_create_processing(id_task, request, *args, force_enable_hr=True)
     p.batch_size = 1
     p.n_iter = 1
     # txt2img_upscale attribute that signifies this is called by txt2img_upscale
@@ -82,7 +82,7 @@ def txt2img_upscale_function(id_task: str, request: gr.Request, gallery, gallery
         processed = modules.scripts.scripts_txt2img.run(p, *p.script_args)
 
         if processed is None:
-            processed = processing.process_images(p)
+            processed: processing.Processed = processing.process_images(p)
 
     shared.total_tqdm.clear()
 
@@ -90,7 +90,7 @@ def txt2img_upscale_function(id_task: str, request: gr.Request, gallery, gallery
     for i, image in enumerate(gallery):
         if i == gallery_index:
             if shared.opts.hires_button_gallery_inset:
-                fake_image = Image.new(mode="RGB", size=(1, 1))
+                fake_image: Image.Image = Image.new(mode="RGB", size=(1, 1))
                 fake_image.already_saved_as = image["name"].rsplit('?', 1)[0]
                 new_gallery.append(fake_image)
                 geninfo["infotexts"][gallery_index+1: gallery_index+1] = processed.infotexts
@@ -98,7 +98,7 @@ def txt2img_upscale_function(id_task: str, request: gr.Request, gallery, gallery
                 geninfo["infotexts"][gallery_index: gallery_index+1] = processed.infotexts
             new_gallery.extend(processed.images)
         else:
-            fake_image = Image.new(mode="RGB", size=(1, 1))
+            fake_image: Image.Image = Image.new(mode="RGB", size=(1, 1))
             fake_image.already_saved_as = image["name"].rsplit('?', 1)[0]
             new_gallery.append(fake_image)
 
@@ -106,13 +106,13 @@ def txt2img_upscale_function(id_task: str, request: gr.Request, gallery, gallery
 
 
 def txt2img_function(id_task: str, request: gr.Request, *args):
-    p = txt2img_create_processing(id_task, request, *args)
+    p: processing.StableDiffusionProcessingTxt2Img = txt2img_create_processing(id_task, request, *args)
 
     with closing(p):
         processed = modules.scripts.scripts_txt2img.run(p, *p.script_args)
 
         if processed is None:
-            processed = processing.process_images(p)
+            processed: processing.Processed = processing.process_images(p)
 
     shared.total_tqdm.clear()
 
