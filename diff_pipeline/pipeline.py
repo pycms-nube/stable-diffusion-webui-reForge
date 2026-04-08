@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 import torch.nn.functional as F
-from ldm_patched.modules.model_base import SDXL
+
 
 if TYPE_CHECKING:
     from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
@@ -313,7 +313,7 @@ class DiffPipeline():
         )
         self._seq_hooks_installed: bool = False
 
-        self._hf_unet: Any  # UNet2DConditionModel — typed as Any; diffusers has no stubs
+        self._hf_unet: UNet2DConditionModel  
         log.info("DiffPipeline: building HF UNet2DConditionModel from checkpoint weights …")
         self._hf_unet = self._build_hf_unet(unet_patcher.model)
         self._install_attn_processors(self._hf_unet)
@@ -334,7 +334,7 @@ class DiffPipeline():
 
     def _build_hf_unet(self, ldm_model) -> "UNet2DConditionModel":
         """Convert ldm SDXL state dict → HF UNet2DConditionModel."""
-        from diffusers import UNet2DConditionModel
+        from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
         from ldm_patched.modules.utils import unet_to_diffusers
 
         # Merge detected config (has num_res_blocks etc.) with our known full
@@ -482,7 +482,18 @@ class DiffPipeline():
         log.info(
             "DiffPipeline: sequential CPU offload hooks installed (execution device: %s)", device
         )
-
+    def _install_auto_offload_hooks(self) -> None:
+        """
+        This is for replicate the same Forge auto try loading
+        Using accelerate
+        """
+        from accelerate import infer_auto_device_map
+        for child in self._hf_unet.children():
+            infer_auto_device_map(child, offload_buffers=True, fallback_allocation=True)
+        
+        log.info(
+            "DiffPipeline: Auto device map is analyzed "
+        )
     # ------------------------------------------------------------------
     # Phase 5 — LoRA synchronisation
     # ------------------------------------------------------------------
@@ -542,7 +553,9 @@ class DiffPipeline():
 
         if not patches:
             return
-
+        
+        # Before a change, we need to clear all mapping and just move to same device
+        
         max_depth = max(len(v) for v in patches.values())
 
         for depth in range(max_depth):
@@ -597,7 +610,8 @@ class DiffPipeline():
             log.warning("DIFFUSER NOW FUSE LORA INTO U-NET")
             
             log.warning("No LORAS UNLOAD, NOT HOTSWAP")
-
+        # Before leave, do auto mapping
+        self._install_auto_offload_hooks()
     # ------------------------------------------------------------------
     # Public interface (mirrors BaseModel.apply_model signature)
     # ------------------------------------------------------------------
@@ -641,9 +655,13 @@ class DiffPipeline():
             if not self._seq_hooks_installed:
                 self._install_sequential_offload_hooks(device)
         else:
+            
             # Whole-model placement: move to compute device if needed.
             if next(self._hf_unet.parameters()).device != device:
                 self._hf_unet.to(device=device)
+            
+            
+            
 
         # Dtype from HF UNet (works regardless of current parameter device).
         dtype = next(self._hf_unet.parameters()).dtype
@@ -702,8 +720,11 @@ class DiffPipeline():
 
         # --- 5. LoRA sync (Phase 5) ---
         self._sync_lora()
-
+        
+        DEBUG = 1
         # --- 6. HF UNet forward ---
+        if DEBUG == 1:
+            self._hf_unet.compile()
 
         unet_output = self._hf_unet(
             sample=xc,
