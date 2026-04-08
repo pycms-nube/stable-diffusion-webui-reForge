@@ -1,8 +1,12 @@
+import logging
 import torch
 from ldm_patched.modules.conds import CONDRegular, CONDCrossAttn
 from ldm_patched.modules.samplers import sampling_function
 from ldm_patched.modules import model_management
 from ldm_patched.modules.ops import cleanup_cache
+import ldm_patched.modules.patcher_extension as patcher_extension
+
+_log = logging.getLogger(__name__)
 
 
 def cond_from_a1111_to_patched_ldm(cond):
@@ -113,6 +117,37 @@ def forge_sample(self, denoiser_params, cond_scale, cond_composition):
 
 
 
+def _ensure_diffusers_wrapper(unet):
+    """Register the DiffPipeline apply_model wrapper on *this* unet if missing.
+
+    The sampler may hold a stale sd_model reference (inner_model cached before a
+    model reload), so the wrapper registered at load time may live on a different
+    UnetPatcher instance.  Re-registering here is idempotent — add_wrapper_with_key
+    appends, so we guard with an explicit presence check.
+    """
+    key = patcher_extension.WrappersMP.APPLY_MODEL
+    if "forge_diffusers" in unet.wrappers.get(key, {}):
+        return  # already present on this patcher instance
+
+    # Lazy import to avoid circular dependency (modules → modules_forge → modules)
+    from modules import sd_models
+    sd_model = sd_models.model_data.get_sd_model()
+    if sd_model is None:
+        return
+    _dp = getattr(sd_model, "diff_pipeline", None)
+    if _dp is None:
+        return
+
+    def _diff_apply_model_wrapper(executor, x, t, c_concat=None, c_crossattn=None,
+                                   control=None, transformer_options={}, **kwargs):
+        return _dp.apply_model(x, t, c_concat=c_concat, c_crossattn=c_crossattn,
+                               control=control, transformer_options=transformer_options,
+                               **kwargs)
+
+    unet.add_wrapper_with_key(key, "forge_diffusers", _diff_apply_model_wrapper)
+    _log.info("[forge_sampler] forge_diffusers wrapper registered on unet id=%d", id(unet))
+
+
 def sampling_prepare(unet, x):
     B, C, H, W = x.shape
 
@@ -130,6 +165,20 @@ def sampling_prepare(unet, x):
         models=[unet] + additional_model_patchers,
         memory_required=unet_inference_memory + additional_inference_memory)
 
+    # Lazy-register the DiffPipeline apply_model wrapper on whichever unet object
+    # the sampler actually uses. The sampler can hold a stale sd_model reference
+    # (inner_model cached before model reload), so the wrapper added at load time
+    # may be on a different UnetPatcher instance. Re-register here if missing.
+    _ensure_diffusers_wrapper(unet)
+
+    # Propagate wrappers from the UnetPatcher into transformer_options so that
+    # wrappers registered via add_wrapper_with_key() (e.g. forge_diffusers) are
+    # visible to model_base.apply_model() during calc_cond_batch().
+    unet.model_options.setdefault("transformer_options", {})["wrappers"] = \
+        patcher_extension.copy_nested_dicts(unet.wrappers)
+    _log.debug("[sampling_prepare] unet id=%d apply_model wrappers=%s",
+               id(unet), list(unet.wrappers.get(patcher_extension.WrappersMP.APPLY_MODEL, {}).keys()))
+
     real_model = unet.model
 
     percent_to_timestep_function = lambda p: real_model.model_sampling.percent_to_sigma(p)
@@ -143,5 +192,8 @@ def sampling_prepare(unet, x):
 def sampling_cleanup(unet):
     for cnet in unet.list_controlnets():
         cnet.cleanup()
+    # Clear wrappers injected by sampling_prepare so stale state
+    # doesn't persist if a different model is loaded next call.
+    unet.model_options.get("transformer_options", {}).pop("wrappers", None)
     cleanup_cache()
     return

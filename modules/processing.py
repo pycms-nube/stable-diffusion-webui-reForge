@@ -234,6 +234,7 @@ class StableDiffusionProcessing:
     dynamic_clip_skip_schedule: list | None = field(default=None, init=False)
     dynamic_clip_skip_sets: dict | None = field(default=None, init=False)
 
+    
     def __post_init__(self) -> None:
         if self.sampler_index is not None:
             print("sampler_index argument for StableDiffusionProcessing does not do anything; use sampler_name", file=sys.stderr)
@@ -489,7 +490,7 @@ class StableDiffusionProcessing:
     def _build_dynamic_clip_skip_schedule(self, total_steps, start):
         schedule = []
         current = int(start)
-        for _: int in range(total_steps):
+        for _ in range(total_steps):
             schedule.append(current)
             if current > 2:
                 current -= 1
@@ -514,8 +515,8 @@ class StableDiffusionProcessing:
             return None
 
         schedule = []
-        for i: int in range(total_steps):
-            idx: int = min(i, len(values) - 1)
+        for i in range(total_steps):
+            idx = min(i, len(values) - 1)
             schedule.append(values[idx])
         return schedule
 
@@ -569,7 +570,7 @@ class StableDiffusionProcessing:
         self.dynamic_clip_skip_sets = None
 
         if opts.dynamic_clip_skip_enabled:
-            minimal_clip_skip: Any | int = self._minimal_clip_skip()
+            minimal_clip_skip = self._minimal_clip_skip()
             schedule = None
             custom_schedule_used = False
 

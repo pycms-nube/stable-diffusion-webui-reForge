@@ -20,6 +20,7 @@ parser.add_argument("--skip-prepare-environment", action='store_true', help="lau
 parser.add_argument("--skip-install", action='store_true', help="launch.py argument: skip installation of packages")
 parser.add_argument("--dump-sysinfo", action='store_true', help="launch.py argument: dump limited sysinfo file (without information about extensions, options) to disk and quit")
 parser.add_argument("--loglevel", type=str, help="log level; one of: CRITICAL, ERROR, WARNING, INFO, DEBUG", default=None)
+parser.add_argument("--use-uv", action='store_true', help="launch.py argument: use UV package manager instead of pip for faster package installation")
 parser.add_argument("--do-not-download-clip", action='store_true', help="do not download CLIP model even if it's not included in the checkpoint")
 parser.add_argument("--data-dir", type=normalized_filepath, default=os.path.dirname(os.path.dirname(os.path.realpath(__file__))), help="base path where all user data is stored")
 parser.add_argument("--models-dir", type=normalized_filepath, default=None, help="base path where models are stored; overrides --data-dir")
@@ -147,4 +148,34 @@ parser.add_argument(
     type=Path,
     help="Path to directory with annotator model directories",
     default=None,
+)
+parser.add_argument(
+    "--forge-diffusers-pipeline",
+    action="store_true",
+    help="Enable experimental Diffusers-based pipeline for SDXL models (WIP; see diff_pipeline/)",
+    default=False,
+)
+parser.add_argument(
+    "--forge-diffusers-offload",
+    action="store_true",
+    help="When using --forge-diffusers-pipeline, move the whole HF UNet back to CPU after "
+         "each sampling step to save VRAM. Adds one full transfer per step.",
+    default=False,
+)
+parser.add_argument(
+    "--forge-diffusers-sequential-offload",
+    action="store_true",
+    help="When using --forge-diffusers-pipeline, use accelerate per-block CPU offload: "
+         "each UNet block moves to GPU just before its forward pass and returns to CPU "
+         "immediately after (peak VRAM ≈ largest single block). Slower than "
+         "--forge-diffusers-offload but uses significantly less VRAM. "
+         "Takes precedence over --forge-diffusers-offload if both are set.",
+    default=False,
+)
+parser.add_argument(
+    "--allow-download",
+    action="store_true",
+    help="Allow huggingface_hub / diffusers / transformers to download files from the internet. "
+         "By default all network fetches are blocked; only locally cached files are used.",
+    default=False,
 )

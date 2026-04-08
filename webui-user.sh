@@ -10,7 +10,7 @@
 #clone_dir="stable-diffusion-webui"
 
 # Commandline arguments for webui.py, for example: export COMMANDLINE_ARGS="--medvram --opt-split-attention"
-#export COMMANDLINE_ARGS=""
+export COMMANDLINE_ARGS="--use-uv --forge-diffusers-pipeline"
 
 # python3 executable
 python_cmd="python3.11"
@@ -44,5 +44,8 @@ python_cmd="python3.11"
 
 # Uncomment to disable TCMalloc
 #export NO_TCMALLOC="True"
+
+# This tells webui.sh use UV
+export use_uv=1
 
 ###########################################

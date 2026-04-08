@@ -1,6 +1,7 @@
 GitPython
 Pillow
 accelerate
+diffusers
 
 blendmodes
 clean-fid
