@@ -4,7 +4,6 @@ from contextlib import closing
 import modules.scripts
 from modules import processing, infotext_utils
 from modules.infotext_utils import create_override_settings_dict, parse_generation_parameters
-from modules.shared import opts
 import modules.shared as shared
 from modules.ui import plaintext_to_html
 from PIL import Image
@@ -20,8 +19,8 @@ def txt2img_create_processing(id_task: str, request: gr.Request, prompt: str, ne
 
     p = processing.StableDiffusionProcessingTxt2Img(
         sd_model=shared.sd_model,
-        outpath_samples=opts.outdir_samples or opts.outdir_txt2img_samples,
-        outpath_grids=opts.outdir_grids or opts.outdir_txt2img_grids,
+        outpath_samples=shared.opts.outdir_samples or shared.opts.outdir_txt2img_samples,
+        outpath_grids=shared.opts.outdir_grids or shared.opts.outdir_txt2img_grids,
         prompt=prompt,
         styles=prompt_styles,
         negative_prompt=negative_prompt,
@@ -117,10 +116,10 @@ def txt2img_function(id_task: str, request: gr.Request, *args):
     shared.total_tqdm.clear()
 
     generation_info_js = processed.js()
-    if opts.samples_log_stdout:
+    if shared.opts.samples_log_stdout:
         print(generation_info_js)
 
-    if opts.do_not_show_images:
+    if shared.opts.do_not_show_images:
         processed.images = []
 
     return processed.images + processed.extra_images, generation_info_js, plaintext_to_html(processed.info), plaintext_to_html(processed.comments, classname="comments")

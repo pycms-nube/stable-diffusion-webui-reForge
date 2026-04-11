@@ -19,7 +19,6 @@ from secrets import compare_digest
 import modules.shared as shared
 from modules import sd_samplers, deepbooru, sd_hijack, images, scripts, ui, postprocessing, errors, restart, shared_items, script_callbacks, infotext_utils, sd_models, sd_schedulers
 from modules.api import models
-from modules.shared import opts
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img, process_images
 from modules.textual_inversion.textual_inversion import create_embedding, train_embedding
 from modules.hypernetworks.hypernetwork import create_hypernetwork, train_hypernetwork
@@ -76,13 +75,13 @@ def verify_url(url):
 
 def decode_base64_to_image(encoding):
     if encoding.startswith("http://") or encoding.startswith("https://"):
-        if not opts.api_enable_requests:
+        if not shared.opts.api_enable_requests:
             raise HTTPException(status_code=500, detail="Requests not allowed")
 
-        if opts.api_forbid_local_requests and not verify_url(encoding):
+        if shared.opts.api_forbid_local_requests and not verify_url(encoding):
             raise HTTPException(status_code=500, detail="Request to local resource not allowed")
 
-        headers = {'user-agent': opts.api_useragent} if opts.api_useragent else {}
+        headers = {'user-agent': shared.opts.api_useragent} if shared.opts.api_useragent else {}
         response = requests.get(encoding, timeout=30, headers=headers)
         try:
             image = images.read(BytesIO(response.content))
@@ -103,26 +102,26 @@ def encode_pil_to_base64(image):
     with io.BytesIO() as output_bytes:
         if isinstance(image, str):
             return image
-        if opts.samples_format.lower() == 'png':
+        if shared.opts.samples_format.lower() == 'png':
             use_metadata = False
             metadata = PngImagePlugin.PngInfo()
             for key, value in image.info.items():
                 if isinstance(key, str) and isinstance(value, str):
                     metadata.add_text(key, value)
                     use_metadata = True
-            image.save(output_bytes, format="PNG", pnginfo=(metadata if use_metadata else None), quality=opts.jpeg_quality)
+            image.save(output_bytes, format="PNG", pnginfo=(metadata if use_metadata else None), quality=shared.opts.jpeg_quality)
 
-        elif opts.samples_format.lower() in ("jpg", "jpeg", "webp"):
+        elif shared.opts.samples_format.lower() in ("jpg", "jpeg", "webp"):
             if image.mode in ("RGBA", "P"):
                 image = image.convert("RGB")
             parameters = image.info.get('parameters', None)
             exif_bytes = piexif.dump({
                 "Exif": { piexif.ExifIFD.UserComment: piexif.helper.UserComment.dump(parameters or "", encoding="unicode") }
             })
-            if opts.samples_format.lower() in ("jpg", "jpeg"):
-                image.save(output_bytes, format="JPEG", exif = exif_bytes, quality=opts.jpeg_quality)
+            if shared.opts.samples_format.lower() in ("jpg", "jpeg"):
+                image.save(output_bytes, format="JPEG", exif = exif_bytes, quality=shared.opts.jpeg_quality)
             else:
-                image.save(output_bytes, format="WEBP", exif = exif_bytes, quality=opts.jpeg_quality, lossless=opts.webp_lossless)
+                image.save(output_bytes, format="WEBP", exif = exif_bytes, quality=shared.opts.jpeg_quality, lossless=shared.opts.webp_lossless)
 
         else:
             raise HTTPException(status_code=500, detail="Invalid image format")
@@ -468,8 +467,8 @@ class Api:
             with closing(StableDiffusionProcessingTxt2Img(sd_model=shared.sd_model, **args)) as p:
                 p.is_api = True
                 p.scripts = script_runner
-                p.outpath_grids = opts.outdir_txt2img_grids
-                p.outpath_samples = opts.outdir_txt2img_samples
+                p.outpath_grids = shared.opts.outdir_txt2img_grids
+                p.outpath_samples = shared.opts.outdir_txt2img_samples
 
                 try:
                     shared.state.begin(job="scripts_txt2img")
@@ -539,8 +538,8 @@ class Api:
                 p.init_images = [decode_base64_to_image(x) for x in init_images]
                 p.is_api = True
                 p.scripts = script_runner
-                p.outpath_grids = opts.outdir_img2img_grids
-                p.outpath_samples = opts.outdir_img2img_samples
+                p.outpath_grids = shared.opts.outdir_img2img_grids
+                p.outpath_samples = shared.opts.outdir_img2img_samples
 
                 try:
                     shared.state.begin(job="scripts_img2img")

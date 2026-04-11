@@ -461,6 +461,11 @@ def load_model_for_a1111(timer, checkpoint_info=None, state_dict=None):
     conditioner = getattr(sd_model, 'conditioner', None)
 
     if conditioner:
+        if forge_objects.clip is None:
+            raise RuntimeError(
+                "No CLIP model available for conditioner setup. "
+                "The checkpoint's CLIP was skipped but no separate text encoder was loaded successfully."
+            )
         text_cond_models = []
         for i in range(len(conditioner.embedders)):
             embedder = conditioner.embedders[i]
@@ -489,6 +494,8 @@ def load_model_for_a1111(timer, checkpoint_info=None, state_dict=None):
         else:
             sd_model.cond_stage_model = conditioner
     elif type(sd_model.cond_stage_model).__name__ == 'FrozenCLIPEmbedder':  # SD15 Clip
+        if forge_objects.clip is None:
+            raise RuntimeError("No CLIP model available for SD15 conditioner setup.")
         sd_model.cond_stage_model.tokenizer = forge_objects.clip.tokenizer.clip_l.tokenizer
         sd_model.cond_stage_model.transformer = forge_objects.clip.cond_stage_model.clip_l.transformer
         model_embeddings = sd_model.cond_stage_model.transformer.text_model.embeddings
@@ -496,6 +503,8 @@ def load_model_for_a1111(timer, checkpoint_info=None, state_dict=None):
             model_embeddings.token_embedding, sd_hijack.model_hijack)
         sd_model.cond_stage_model = forge_clip.CLIP_SD_15_L(sd_model.cond_stage_model, sd_hijack.model_hijack)
     elif type(sd_model.cond_stage_model).__name__ == 'FrozenOpenCLIPEmbedder':  # SD21 Clip
+        if forge_objects.clip is None:
+            raise RuntimeError("No CLIP model available for SD21 conditioner setup.")
         sd_model.cond_stage_model.tokenizer = forge_objects.clip.tokenizer.clip_h.tokenizer
         sd_model.cond_stage_model.transformer = forge_objects.clip.cond_stage_model.clip_h.transformer
         model_embeddings = sd_model.cond_stage_model.transformer.text_model.embeddings

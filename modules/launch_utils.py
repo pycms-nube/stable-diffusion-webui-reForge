@@ -89,7 +89,7 @@ def git_tag_a1111():
 def git_tag():
     return 'f' + forge_version.version + '-' + git_tag_a1111()
 
-
+# FIXME: A protentional router need for this werid douvle run
 def run(command, desc=None, errdesc=None, custom_env=None, live: bool = default_command_live) -> str:
     if desc is not None:
         print(desc)
@@ -326,7 +326,7 @@ def run_extensions_installers(settings_file):
 re_requirement = re.compile(r"\s*([-_a-zA-Z0-9]+)\s*(?:==\s*([-+_.a-zA-Z0-9]+))?\s*")
 
 
-def requirements_met(requirements_file):
+def requirements_met(requirements_file:str):
     """
     Does a simple parse of a requirements.txt file to determine if all rerqirements in it
     are already installed. Returns True if so, False if not installed or parsing fails.
@@ -590,7 +590,7 @@ def dump_sysinfo():
     import datetime
 
     text = sysinfo.get()
-    filename = f"sysinfo-{datetime.datetime.utcnow().strftime('%Y-%m-%d-%H-%M')}.json"
+    filename = f"sysinfo-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d-%H-%M')}.json"
 
     with open(filename, "w", encoding="utf8") as file:
         file.write(text)
@@ -1185,7 +1185,7 @@ def dump_sysinfo() -> str:
     import datetime
 
     text: str = sysinfo.get()
-    filename: str = f"sysinfo-{datetime.datetime.utcnow().strftime('%Y-%m-%d-%H-%M')}.json"
+    filename: str = f"sysinfo-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d-%H-%M')}.json"
 
     with open(filename, "w", encoding="utf8") as file:
         file.write(text)

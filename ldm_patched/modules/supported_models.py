@@ -19,8 +19,7 @@ import ldm_patched.modules.text_encoders.lumina2
 import ldm_patched.modules.text_encoders.wan
 import ldm_patched.modules.text_encoders.ace
 import ldm_patched.modules.text_encoders.omnigen2
-
-from modules.shared import opts
+import modules.shared as shared
 
 from . import supported_models_base
 from . import latent_formats
@@ -167,7 +166,7 @@ class SDXLRefiner(supported_models_base.BASE):
         state_dict = utils.clip_text_transformers_convert(state_dict, "clip_g.", "clip_g.transformer.")
         state_dict = utils.state_dict_key_replace(state_dict, keys_to_replace)
         if (
-            not getattr(opts, 'use_old_clip_g_load_and_ztsnr_application', False)
+            not getattr(shared.opts, 'use_old_clip_g_load_and_ztsnr_application', False)
             and 'clip_g.text_projection' not in state_dict
             and 'clip_g.transformer.text_projection.weight' in state_dict
         ):
@@ -236,7 +235,7 @@ class SDXL(supported_models_base.BASE):
         state_dict = utils.state_dict_key_replace(state_dict, keys_to_replace)
         state_dict = utils.clip_text_transformers_convert(state_dict, "clip_g.", "clip_g.transformer.")
         if (
-            not getattr(opts, 'use_old_clip_g_load_and_ztsnr_application', False)
+            not getattr(shared.opts, 'use_old_clip_g_load_and_ztsnr_application', False)
             and 'clip_g.text_projection' not in state_dict
             and 'clip_g.transformer.text_projection.weight' in state_dict
         ):

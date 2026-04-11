@@ -1,4 +1,3 @@
-from modules.shared import opts
 import torch
 from modules import prompt_parser, sd_samplers_common
 import modules.shared as shared

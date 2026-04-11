@@ -1,6 +1,5 @@
 from __future__ import annotations
 from modules.sd_models_types import WebuiSdModel
-from modules.shared import opts
 import json
 import logging
 import math
@@ -15,13 +14,12 @@ from PIL import Image, ImageOps
 import random
 import cv2
 from skimage import exposure
-from typing import Any, Never, Never, Never
+from typing import Any, ClassVar, Never
 
 import modules.sd_hijack
 from modules import devices, prompt_parser, masking, sd_samplers, infotext_utils, extra_networks, sd_vae_approx, scripts, sd_samplers_common, sd_unet, errors, rng, profiling
-from modules.sd_hijack import model_hijack
 from modules.sd_samplers_common import images_tensor_to_samples, decode_first_stage, approximation_indexes
-from modules.shared import opts, cmd_opts, state
+from modules.shared import cmd_opts
 import modules.processing_scripts.comments as comments_parser
 import modules.shared as shared
 import modules.paths as paths
@@ -35,7 +33,6 @@ from ldm_patched.modules.model_sampling import rescale_zero_terminal_snr_sigmas
 
 from einops import repeat, rearrange
 from blendmodes.blend import blendLayers, BlendType
-from modules.sd_models import apply_token_merging
 from modules_forge.forge_util import apply_circular_forge
 
 
@@ -106,7 +103,7 @@ def txt2img_image_conditioning(sd_model, x, width, height):
 
         # The "masked-image" in this case will just be all 0.5 since the entire image is masked.
         image_conditioning: torch.Tensor = torch.ones(x.shape[0], 3, height, width, device=x.device) * 0.5
-        image_conditioning = images_tensor_to_samples(image_conditioning, approximation_indexes.get(opts.sd_vae_encode_method))
+        image_conditioning = images_tensor_to_samples(image_conditioning, approximation_indexes.get(shared.opts.sd_vae_encode_method))
 
         # Add the fake full 1s mask to the first dimension.
         image_conditioning: torch.Tensor = torch.nn.functional.pad(image_conditioning, (0, 0, 0, 0, 1, 0), value=1.0)
@@ -123,7 +120,7 @@ def txt2img_image_conditioning(sd_model, x, width, height):
             # The "masked-image" in this case will just be all 0.5 since the entire image is masked.
             image_conditioning: torch.Tensor = torch.ones(x.shape[0], 3, height, width, device=x.device) * 0.5
             image_conditioning = images_tensor_to_samples(image_conditioning,
-                                                            approximation_indexes.get(opts.sd_vae_encode_method))
+                                                            approximation_indexes.get(shared.opts.sd_vae_encode_method))
 
             # Add the fake full 1s mask to the first dimension.
             image_conditioning: torch.Tensor = torch.nn.functional.pad(image_conditioning, (0, 0, 0, 0, 1, 0), value=1.0)
@@ -189,8 +186,8 @@ class StableDiffusionProcessing:
     script_args_value: list = field(default=None, init=False)
     scripts_setup_complete: bool = field(default=False, init=False)
 
-    cached_uc: list[None] = [None, None, None]
-    cached_c: list[None] = [None, None, None]
+    cached_uc: ClassVar[list[None]] = [None, None, None]
+    cached_c: ClassVar[list[None]] = [None, None, None]
 
     comments: dict = None
     sampler: sd_samplers_common.Sampler | None = field(default=None, init=False)
@@ -269,15 +266,13 @@ class StableDiffusionProcessing:
         self.pixels_after_sampling = []
         self.modified_noise = None
 
-    if opts.sd_sampling == "A1111":
-        def fill_fields_from_opts(self) -> None:
-            self.s_min_uncond = self.s_min_uncond if self.s_min_uncond is not None else opts.s_min_uncond
-            self.s_churn = self.s_churn if self.s_churn is not None else opts.s_churn
-            self.s_tmin = self.s_tmin if self.s_tmin is not None else opts.s_tmin
-            self.s_tmax = (self.s_tmax if self.s_tmax is not None else opts.s_tmax) or float('inf')
-            self.s_noise = self.s_noise if self.s_noise is not None else opts.s_noise
-    else:
-        pass
+    def fill_fields_from_opts(self) -> None:
+        if shared.opts.sd_sampling == "A1111":
+            self.s_min_uncond = self.s_min_uncond if self.s_min_uncond is not None else shared.opts.s_min_uncond
+            self.s_churn = self.s_churn if self.s_churn is not None else shared.opts.s_churn
+            self.s_tmin = self.s_tmin if self.s_tmin is not None else shared.opts.s_tmin
+            self.s_tmax = (self.s_tmax if self.s_tmax is not None else shared.opts.s_tmax) or float('inf')
+            self.s_noise = self.s_noise if self.s_noise is not None else shared.opts.s_noise
 
     @property
     def sd_model(self):
@@ -329,7 +324,7 @@ class StableDiffusionProcessing:
         midas_in: torch.Tensor = torch.from_numpy(transformed["midas_in"][None, ...]).to(device=shared.device)
         midas_in: torch.Tensor = repeat(midas_in, "1 ... -> n ...", n=self.batch_size)
 
-        conditioning_image = images_tensor_to_samples(source_image*0.5+0.5, approximation_indexes.get(opts.sd_vae_encode_method))
+        conditioning_image = images_tensor_to_samples(source_image*0.5+0.5, approximation_indexes.get(shared.opts.sd_vae_encode_method))
         conditioning: torch.Tensor = torch.nn.functional.interpolate(
             self.sd_model.depth_model(midas_in),
             size=conditioning_image.shape[2:],
@@ -426,15 +421,15 @@ class StableDiffusionProcessing:
         self.sampler = None
         self.c = None
         self.uc = None
-        if not opts.persistent_cond_cache:
+        if not shared.opts.persistent_cond_cache:
             StableDiffusionProcessing.cached_c: list[None] = [None, None]
             StableDiffusionProcessing.cached_uc: list[None] = [None, None]
 
     def get_token_merging_ratio(self, for_hr=False):
         if for_hr:
-            return self.token_merging_ratio_hr or opts.token_merging_ratio_hr or self.token_merging_ratio or opts.token_merging_ratio
+            return self.token_merging_ratio_hr or shared.opts.token_merging_ratio_hr or self.token_merging_ratio or shared.opts.token_merging_ratio
 
-        return self.token_merging_ratio or opts.token_merging_ratio
+        return self.token_merging_ratio or shared.opts.token_merging_ratio
 
     def setup_prompts(self) -> None:
         if isinstance(self.prompt,list):
@@ -466,20 +461,20 @@ class StableDiffusionProcessing:
             steps,
             hires_steps,
             use_old_scheduling,
-            opts.CLIP_stop_at_last_layers,
-            opts.dynamic_clip_skip_enabled,
-            opts.dynamic_clip_skip_start,
-            opts.dynamic_clip_skip_use_schedule,
-            opts.dynamic_clip_skip_schedule_values,
+            shared.opts.CLIP_stop_at_last_layers,
+            shared.opts.dynamic_clip_skip_enabled,
+            shared.opts.dynamic_clip_skip_start,
+            shared.opts.dynamic_clip_skip_use_schedule,
+            shared.opts.dynamic_clip_skip_schedule_values,
             shared.sd_model.sd_checkpoint_info,
             extra_network_data,
-            opts.sdxl_crop_left,
-            opts.sdxl_crop_top,
+            shared.opts.sdxl_crop_left,
+            shared.opts.sdxl_crop_top,
             self.width,
             self.height,
-            opts.fp8_storage,
-            opts.cache_fp16_weight,
-            opts.emphasis,
+            shared.opts.fp8_storage,
+            shared.opts.cache_fp16_weight,
+            shared.opts.emphasis,
         )
 
     def _minimal_clip_skip(self) -> Any | int:
@@ -499,7 +494,7 @@ class StableDiffusionProcessing:
         return schedule
 
     def _parse_dynamic_schedule(self, total_steps, minimal_clip_skip):
-        raw = opts.dynamic_clip_skip_schedule_values or ""
+        raw = shared.opts.dynamic_clip_skip_schedule_values or ""
         parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip() != ""]
         values = []
         for p in parts:
@@ -569,34 +564,34 @@ class StableDiffusionProcessing:
         self.dynamic_clip_skip_schedule = None
         self.dynamic_clip_skip_sets = None
 
-        if opts.dynamic_clip_skip_enabled:
+        if shared.opts.dynamic_clip_skip_enabled:
             minimal_clip_skip = self._minimal_clip_skip()
             schedule = None
             custom_schedule_used = False
 
-            if opts.dynamic_clip_skip_use_schedule:
+            if shared.opts.dynamic_clip_skip_use_schedule:
                 schedule = self._parse_dynamic_schedule(total_steps, minimal_clip_skip)
                 custom_schedule_used: bool = schedule is not None
 
             if schedule is None:
-                start_clip_skip: int = max(int(opts.dynamic_clip_skip_start), 2, minimal_clip_skip)
+                start_clip_skip: int = max(int(shared.opts.dynamic_clip_skip_start), 2, minimal_clip_skip)
                 start_clip_skip: int = min(start_clip_skip, 12)
                 schedule = self._build_dynamic_clip_skip_schedule(total_steps, start_clip_skip)
             else:
-                start_clip_skip = schedule[0] if schedule else max(int(opts.dynamic_clip_skip_start), 2, minimal_clip_skip)
+                start_clip_skip = schedule[0] if schedule else max(int(shared.opts.dynamic_clip_skip_start), 2, minimal_clip_skip)
 
             unique_clip_skips = list(dict.fromkeys(schedule))
 
-            original_clip_skip = opts.CLIP_stop_at_last_layers
+            original_clip_skip = shared.opts.CLIP_stop_at_last_layers
             cond_sets = {}
             try:
                 for clip_skip in unique_clip_skips:
-                    opts.CLIP_stop_at_last_layers = clip_skip
+                    shared.opts.CLIP_stop_at_last_layers = clip_skip
                     uc = self.get_conds_with_caching(prompt_parser.get_learned_conditioning, negative_prompts, total_steps, [self.cached_uc], self.extra_network_data)
                     c = self.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, total_steps, [self.cached_c], self.extra_network_data)
                     cond_sets[clip_skip] = (c, uc)
             finally:
-                opts.CLIP_stop_at_last_layers = original_clip_skip
+                shared.opts.CLIP_stop_at_last_layers = original_clip_skip
 
             self.dynamic_clip_skip_schedule = schedule
             self.dynamic_clip_skip_sets = cond_sets
@@ -611,14 +606,14 @@ class StableDiffusionProcessing:
 
             self.clip_skip = start_clip_skip
             if custom_schedule_used:
-                self.extra_generation_params["Dynamic clip skip schedule"] = opts.dynamic_clip_skip_schedule_values or ",".join(map(str, schedule))
+                self.extra_generation_params["Dynamic clip skip schedule"] = shared.opts.dynamic_clip_skip_schedule_values or ",".join(map(str, schedule))
             else:
                 self.extra_generation_params["Dynamic clip skip"] = f"{start_clip_skip}->2"
                 self.extra_generation_params["Dynamic clip skip start"] = start_clip_skip
         else:
             self.uc = self.get_conds_with_caching(prompt_parser.get_learned_conditioning, negative_prompts, total_steps, [self.cached_uc], self.extra_network_data)
             self.c = self.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, total_steps, [self.cached_c], self.extra_network_data)
-            self.clip_skip = opts.CLIP_stop_at_last_layers
+            self.clip_skip = shared.opts.CLIP_stop_at_last_layers
 
     def get_conds(self):
         return self.c, self.uc
@@ -628,7 +623,7 @@ class StableDiffusionProcessing:
 
     def save_samples(self) -> bool:
         """Returns whether generated images need to be written to disk"""
-        return opts.samples_save and not self.do_not_save_samples and (opts.save_incomplete_images or not state.interrupted and not state.skipped)
+        return shared.opts.samples_save and not self.do_not_save_samples and (shared.opts.save_incomplete_images or not shared.state.interrupted and not shared.state.skipped)
 
 
 class Processed:
@@ -650,7 +645,7 @@ class Processed:
         self.steps: int = p.steps
         self.batch_size: int = p.batch_size
         self.restore_faces: bool = p.restore_faces
-        self.face_restoration_model = opts.face_restoration_model if p.restore_faces else None
+        self.face_restoration_model = shared.opts.face_restoration_model if p.restore_faces else None
         self.sd_model_name: str = p.sd_model_name
         self.sd_model_hash: str = p.sd_model_hash
         self.sd_vae_name: str = p.sd_vae_name
@@ -661,8 +656,8 @@ class Processed:
         self.extra_generation_params: dict[str, Any] = p.extra_generation_params
         self.index_of_first_image: int = index_of_first_image
         self.styles: list[str] = p.styles
-        self.job_timestamp: str = state.job_timestamp
-        self.clip_skip = opts.CLIP_stop_at_last_layers
+        self.job_timestamp: str = shared.state.job_timestamp
+        self.clip_skip = shared.opts.CLIP_stop_at_last_layers
         self.token_merging_ratio: int = p.token_merging_ratio
         self.token_merging_ratio_hr: int = p.token_merging_ratio_hr
 
@@ -834,7 +829,7 @@ def create_infotext(p, all_prompts, all_seeds, all_subseeds, comments=None, iter
     if all_negative_prompts is None:
         all_negative_prompts = p.all_negative_prompts
 
-    clip_skip = getattr(p, 'clip_skip', opts.CLIP_stop_at_last_layers)
+    clip_skip = getattr(p, 'clip_skip', shared.opts.CLIP_stop_at_last_layers)
     enable_hr: Any | bool = getattr(p, 'enable_hr', False)
     token_merging_ratio = p.get_token_merging_ratio()
     token_merging_ratio_hr = p.get_token_merging_ratio(for_hr=True)
@@ -842,7 +837,7 @@ def create_infotext(p, all_prompts, all_seeds, all_subseeds, comments=None, iter
     prompt_text = p.main_prompt if use_main_prompt else all_prompts[index]
     negative_prompt = p.main_negative_prompt if use_main_prompt else all_negative_prompts[index]
 
-    uses_ensd = opts.eta_noise_seed_delta != 0
+    uses_ensd = shared.opts.eta_noise_seed_delta != 0
     if uses_ensd:
         uses_ensd = sd_samplers_common.is_sampler_using_eta_noise_seed_delta(p)
 
@@ -853,29 +848,29 @@ def create_infotext(p, all_prompts, all_seeds, all_subseeds, comments=None, iter
         "CFG scale": p.cfg_scale,
         "Image CFG scale": getattr(p, 'image_cfg_scale', None),
         "Seed": p.all_seeds[0] if use_main_prompt else all_seeds[index],
-        "Face restoration": opts.face_restoration_model if p.restore_faces else None,
+        "Face restoration": shared.opts.face_restoration_model if p.restore_faces else None,
         "Size": f"{p.width}x{p.height}",
-        "Model hash": p.sd_model_hash if opts.add_model_hash_to_info else None,
-        "Model": p.sd_model_name if opts.add_model_name_to_info else None,
-        "FP8 weight": opts.fp8_storage if devices.fp8 else None,
-        "Cache FP16 weight for LoRA": opts.cache_fp16_weight if devices.fp8 else None,
-        "VAE hash": p.sd_vae_hash if opts.add_vae_hash_to_info else None,
-        "VAE": p.sd_vae_name if opts.add_vae_name_to_info else None,
+        "Model hash": p.sd_model_hash if shared.opts.add_model_hash_to_info else None,
+        "Model": p.sd_model_name if shared.opts.add_model_name_to_info else None,
+        "FP8 weight": shared.opts.fp8_storage if devices.fp8 else None,
+        "Cache FP16 weight for LoRA": shared.opts.cache_fp16_weight if devices.fp8 else None,
+        "VAE hash": p.sd_vae_hash if shared.opts.add_vae_hash_to_info else None,
+        "VAE": p.sd_vae_name if shared.opts.add_vae_name_to_info else None,
         "Variation seed": (None if p.subseed_strength == 0 else (p.all_subseeds[0] if use_main_prompt else all_subseeds[index])),
         "Variation seed strength": (None if p.subseed_strength == 0 else p.subseed_strength),
         "Seed resize from": (None if p.seed_resize_from_w <= 0 or p.seed_resize_from_h <= 0 else f"{p.seed_resize_from_w}x{p.seed_resize_from_h}"),
         "Denoising strength": p.extra_generation_params.get("Denoising strength"),
         "Conditional mask weight": getattr(p, "inpainting_mask_weight", shared.opts.inpainting_mask_weight) if p.is_using_inpainting_conditioning else None,
         "Clip skip": None if clip_skip <= 1 else clip_skip,
-        "ENSD": opts.eta_noise_seed_delta if uses_ensd else None,
+        "ENSD": shared.opts.eta_noise_seed_delta if uses_ensd else None,
         "Token merging ratio": None if token_merging_ratio == 0 else token_merging_ratio,
         "Token merging ratio hr": None if not enable_hr or token_merging_ratio_hr == 0 else token_merging_ratio_hr,
         "Init image hash": getattr(p, 'init_img_hash', None),
-        "RNG": opts.randn_source if opts.randn_source != "GPU" else None,
+        "RNG": shared.opts.randn_source if shared.opts.randn_source != "GPU" else None,
         "Tiling": "True" if p.tiling else None,
         **p.extra_generation_params,
-        "Version": program_version() if opts.add_version_to_infotext else None,
-        "User": p.user if opts.add_user_name_to_info else None,
+        "Version": program_version() if shared.opts.add_version_to_infotext else None,
+        "User": p.user if shared.opts.add_user_name_to_info else None,
     }
 
     for key, value in generation_params.items():
@@ -899,7 +894,7 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
     if p.scripts is not None:
         p.scripts.before_process(p)
 
-    stored_opts = {k: opts.data[k] if k in opts.data else opts.get_default(k) for k: str in p.override_settings.keys() if k in opts.data}
+    stored_opts = {k: shared.opts.data[k] if k in shared.opts.data else shared.opts.get_default(k) for k in p.override_settings.keys() if k in shared.opts.data}
 
     try:
         # if no checkpoint override or the override checkpoint can't be found, remove override entry and load opts checkpoint
@@ -909,7 +904,7 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
             sd_models.reload_model_weights()
 
         for k, v in p.override_settings.items():
-            opts.set(k, v, is_api=True, run_callbacks=False)
+            shared.opts.set(k, v, is_api=True, run_callbacks=False)
 
             if k == 'sd_model_checkpoint':
                 sd_models.reload_model_weights()
@@ -949,10 +944,10 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
     subseed: int = get_fixed_seed(p.subseed)
 
     if p.restore_faces is None:
-        p.restore_faces = opts.face_restoration
+        p.restore_faces = shared.opts.face_restoration
 
     if p.tiling is None:
-        p.tiling = opts.tiling
+        p.tiling = shared.opts.tiling
 
     if p.refiner_checkpoint not in (None, "", "None", "none"):
         p.refiner_checkpoint_info = sd_models.get_closet_checkpoint_match(p.refiner_checkpoint)
@@ -970,7 +965,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
     apply_circular_forge(p.sd_model, p.tiling)
     modules.sd_hijack.model_hijack.clear_comments()
 
-    if opts.sd_sampling == "A1111":
+    if shared.opts.sd_sampling == "A1111":
         p.fill_fields_from_opts()
     else:
         pass
@@ -979,15 +974,15 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
     if isinstance(seed, list):
         p.all_seeds = seed
     else:
-        p.all_seeds = [int(seed) + (x if p.subseed_strength == 0 else 0) for x: int in range(len(p.all_prompts))]
+        p.all_seeds = [int(seed) + (x if p.subseed_strength == 0 else 0) for x in range(len(p.all_prompts))]
 
     if isinstance(subseed, list):
         p.all_subseeds = subseed
     else:
-        p.all_subseeds = [int(subseed) + x for x: int in range(len(p.all_prompts))]
+        p.all_subseeds = [int(subseed) + x for x in range(len(p.all_prompts))]
 
     if os.path.exists(cmd_opts.embeddings_dir) and not p.do_not_reload_embeddings:
-        model_hijack.embedding_db.load_textual_inversion_embeddings()
+        modules.sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings()
 
     if p.scripts is not None:
         p.scripts.process(p)
@@ -999,21 +994,21 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             p.init(p.all_prompts, p.all_seeds, p.all_subseeds)
 
             # for OSX, loading the model during sampling changes the generated picture, so it is loaded here
-            if shared.opts.live_previews_enable and opts.show_progress_type == "Approx NN":
+            if shared.opts.live_previews_enable and shared.opts.show_progress_type == "Approx NN":
                 sd_vae_approx.model()
 
             sd_unet.apply_unet()
 
-        if state.job_count == -1:
-            state.job_count = p.n_iter
+        if shared.state.job_count == -1:
+            shared.state.job_count = p.n_iter
 
-        for n: int in range(p.n_iter):
+        for n in range(p.n_iter):
             p.iteration = n
 
-            if state.skipped:
-                state.skipped = False
+            if shared.state.skipped:
+                shared.state.skipped = False
 
-            if state.interrupted or state.stopping_generation:
+            if shared.state.interrupted or shared.state.stopping_generation:
                 break
 
             sd_models.reload_model_weights()  # model can be changed for example by refiner
@@ -1045,18 +1040,18 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
             p.setup_conds()
 
-            p.extra_generation_params.update(model_hijack.extra_generation_params)
+            p.extra_generation_params.update(modules.sd_hijack.model_hijack.extra_generation_params)
 
             # params.txt should be saved after scripts.process_batch, since the
             # infotext could be modified by that callback
             # Example: a wildcard processed by process_batch sets an extra model
             # strength, which is saved as "Model Strength: 1.0" in the infotext
             if n == 0 and not cmd_opts.no_prompt_history:
-                with open(os.path.join(paths.data_path, "params.txt"), "w", encoding="utf8") as file: TextIOWrapper[_WrappedBuffer]:
+                with open(os.path.join(paths.data_path, "params.txt"), "w", encoding="utf8") as file:
                     processed = Processed(p, [])
                     file.write(processed.infotext(p, 0))
 
-            for comment in model_hijack.comments:
+            for comment in modules.sd_hijack.model_hijack.comments:
                 p.comment(comment)
 
             if p.n_iter > 1:
@@ -1070,7 +1065,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             )
             if (
                 (
-                    opts.sd_noise_schedule == "Zero Terminal SNR"
+                    shared.opts.sd_noise_schedule == "Zero Terminal SNR"
                     or (hasattr(p.sd_model, 'ztsnr') and p.sd_model.ztsnr)
                     or force_apply_ztsnr
                 )
@@ -1078,7 +1073,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             ):
                 p.sd_model.sigmas_original = p.sd_model.forge_objects.unet.model.model_sampling.sigmas
                 p.sd_model.alphas_cumprod_original = p.sd_model.alphas_cumprod
-                if not getattr(opts, 'use_old_clip_g_load_and_ztsnr_application', False):
+                if not getattr(shared.opts, 'use_old_clip_g_load_and_ztsnr_application', False):
                     sd_models.apply_alpha_schedule_override(p.sd_model, p, force_apply=force_apply_ztsnr)
                 p.sd_model.forge_objects.unet.model.model_sampling.set_sigmas(rescale_zero_terminal_snr_sigmas(p.sd_model.forge_objects.unet.model.model_sampling.sigmas).to(p.sd_model.forge_objects.unet.model.device))
 
@@ -1105,8 +1100,8 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             else:
                 devices.test_for_nans(samples_ddim, "unet")
 
-                if opts.sd_vae_decode_method != 'Full':
-                    p.extra_generation_params['VAE Decoder'] = opts.sd_vae_decode_method
+                if shared.opts.sd_vae_decode_method != 'Full':
+                    p.extra_generation_params['VAE Decoder'] = shared.opts.sd_vae_decode_method
                 x_samples_ddim: DecodedSamples = decode_latent_batch(p.sd_model, samples_ddim, target_device=devices.cpu, check_for_nans=True)
 
             x_samples_ddim: torch.Tensor = torch.stack(x_samples_ddim).float()
@@ -1116,7 +1111,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
             devices.torch_gc()
 
-            state.nextjob()
+            shared.state.nextjob()
 
             if p.scripts is not None:
                 p.scripts.postprocess_batch(p, x_samples_ddim, batch_number=n)
@@ -1149,8 +1144,8 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
                 x_sample: np.ndarray[tuple[Any, ...], np.dtype[np.unsignedinteger[np._8Bit]]] = x_sample.astype(np.uint8)
 
                 if p.restore_faces:
-                    if save_samples and opts.save_images_before_face_restoration:
-                        images.save_image(Image.fromarray(x_sample), p.outpath_samples, "", p.seeds[i], p.prompts[i], opts.samples_format, info=infotext(i), p=p, suffix="-before-face-restoration")
+                    if save_samples and shared.opts.save_images_before_face_restoration:
+                        images.save_image(Image.fromarray(x_sample), p.outpath_samples, "", p.seeds[i], p.prompts[i], shared.opts.samples_format, info=infotext(i), p=p, suffix="-before-face-restoration")
 
                     devices.torch_gc()
 
@@ -1179,9 +1174,9 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
                     mask_for_overlay, overlay_image = ppmo.mask_for_overlay, ppmo.overlay_image
 
                 if p.color_corrections is not None and i < len(p.color_corrections):
-                    if save_samples and opts.save_images_before_color_correction:
+                    if save_samples and shared.opts.save_images_before_color_correction:
                         image_without_cc, _ = apply_overlay(image, p.paste_to, overlay_image)
-                        images.save_image(image_without_cc, p.outpath_samples, "", p.seeds[i], p.prompts[i], opts.samples_format, info=infotext(i), p=p, suffix="-before-color-correction")
+                        images.save_image(image_without_cc, p.outpath_samples, "", p.seeds[i], p.prompts[i], shared.opts.samples_format, info=infotext(i), p=p, suffix="-before-color-correction")
                     image: Image.Image = apply_color_correction(p.color_corrections[i], image)
 
                 # If the intention is to show the output from the model
@@ -1198,27 +1193,27 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
                     image: Image.Image = pp.image
 
                 if save_samples:
-                    images.save_image(image, p.outpath_samples, "", p.seeds[i], p.prompts[i], opts.samples_format, info=infotext(i), p=p)
+                    images.save_image(image, p.outpath_samples, "", p.seeds[i], p.prompts[i], shared.opts.samples_format, info=infotext(i), p=p)
 
                 text = infotext(i)
                 infotexts.append(text)
-                if opts.enable_pnginfo:
+                if shared.opts.enable_pnginfo:
                     image.info["parameters"] = text
                 output_images.append(image)
 
                 if mask_for_overlay is not None:
-                    if opts.return_mask or opts.save_mask:
+                    if shared.opts.return_mask or shared.opts.save_mask:
                         image_mask = mask_for_overlay.convert('RGB')
-                        if save_samples and opts.save_mask:
-                            images.save_image(image_mask, p.outpath_samples, "", p.seeds[i], p.prompts[i], opts.samples_format, info=infotext(i), p=p, suffix="-mask")
-                        if opts.return_mask:
+                        if save_samples and shared.opts.save_mask:
+                            images.save_image(image_mask, p.outpath_samples, "", p.seeds[i], p.prompts[i], shared.opts.samples_format, info=infotext(i), p=p, suffix="-mask")
+                        if shared.opts.return_mask:
                             output_images.append(image_mask)
 
-                    if opts.return_mask_composite or opts.save_mask_composite:
+                    if shared.opts.return_mask_composite or shared.opts.save_mask_composite:
                         image_mask_composite: Image.Image = Image.composite(original_denoised_image.convert('RGBA').convert('RGBa'), Image.new('RGBa', image.size), images.resize_image(2, mask_for_overlay, image.width, image.height).convert('L')).convert('RGBA')
-                        if save_samples and opts.save_mask_composite:
-                            images.save_image(image_mask_composite, p.outpath_samples, "", p.seeds[i], p.prompts[i], opts.samples_format, info=infotext(i), p=p, suffix="-mask-composite")
-                        if opts.return_mask_composite:
+                        if save_samples and shared.opts.save_mask_composite:
+                            images.save_image(image_mask_composite, p.outpath_samples, "", p.seeds[i], p.prompts[i], shared.opts.samples_format, info=infotext(i), p=p, suffix="-mask-composite")
+                        if shared.opts.return_mask_composite:
                             output_images.append(image_mask_composite)
 
             del x_samples_ddim
@@ -1231,19 +1226,19 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
         p.color_corrections = None
 
         index_of_first_image = 0
-        unwanted_grid_because_of_img_count = len(output_images) < 2 and opts.grid_only_if_multiple
-        if (opts.return_grid or opts.grid_save) and not p.do_not_save_grid and not unwanted_grid_because_of_img_count:
+        unwanted_grid_because_of_img_count = len(output_images) < 2 and shared.opts.grid_only_if_multiple
+        if (shared.opts.return_grid or shared.opts.grid_save) and not p.do_not_save_grid and not unwanted_grid_because_of_img_count:
             grid: Image.Image = images.image_grid(output_images, p.batch_size)
 
-            if opts.return_grid:
+            if shared.opts.return_grid:
                 text = infotext(use_main_prompt=True)
                 infotexts.insert(0, text)
-                if opts.enable_pnginfo:
+                if shared.opts.enable_pnginfo:
                     grid.info["parameters"] = text
                 output_images.insert(0, grid)
                 index_of_first_image = 1
-            if opts.grid_save:
-                images.save_image(grid, p.outpath_grids, "grid", p.all_seeds[0], p.all_prompts[0], opts.grid_format, info=infotext(use_main_prompt=True), short_filename=not opts.grid_extended_filename, p=p, grid=True)
+            if shared.opts.grid_save:
+                images.save_image(grid, p.outpath_grids, "grid", p.all_seeds[0], p.all_prompts[0], shared.opts.grid_format, info=infotext(use_main_prompt=True), short_filename=not shared.opts.grid_extended_filename, p=p, grid=True)
 
     if not p.disable_extra_networks and p.extra_network_data:
         extra_networks.deactivate(p, p.extra_network_data)
@@ -1298,8 +1293,8 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
     hr_cfg: float = 1.0
     force_task_id: str = None
 
-    cached_hr_uc: list[None] = [None, None, None]
-    cached_hr_c: list[None] = [None, None, None]
+    cached_hr_uc: ClassVar[list[None]] = [None, None, None]
+    cached_hr_c: ClassVar[list[None]] = [None, None, None]
 
     hr_checkpoint_info: dict = field(default=None, init=False)
     hr_upscale_to_x: int = field(default=0, init=False)
@@ -1329,7 +1324,7 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         self.cached_hr_c: list[None] = StableDiffusionProcessingTxt2Img.cached_hr_c
 
     def calculate_target_resolution(self) -> None:
-        if opts.use_old_hires_fix_width_height and self.applied_old_hires_behavior_to != (self.width, self.height):
+        if shared.opts.use_old_hires_fix_width_height and self.applied_old_hires_behavior_to != (self.width, self.height):
             self.hr_resize_x = self.width
             self.hr_resize_y = self.height
             self.hr_upscale_to_x = self.width
@@ -1407,16 +1402,16 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
 
             self.calculate_target_resolution()
 
-            if not state.processing_has_refined_job_count:
-                if state.job_count == -1:
-                    state.job_count = self.n_iter
+            if not shared.state.processing_has_refined_job_count:
+                if shared.state.job_count == -1:
+                    shared.state.job_count = self.n_iter
                 if getattr(self, 'txt2img_upscale', False):
-                    total_steps: int = (self.hr_second_pass_steps or self.steps) * state.job_count
+                    total_steps: int = (self.hr_second_pass_steps or self.steps) * shared.state.job_count
                 else:
-                    total_steps: int = (self.steps + (self.hr_second_pass_steps or self.steps)) * state.job_count
+                    total_steps: int = (self.steps + (self.hr_second_pass_steps or self.steps)) * shared.state.job_count
                 shared.total_tqdm.updateTotal(total_steps)
-                state.job_count = state.job_count * 2
-                state.processing_has_refined_job_count = True
+                shared.state.job_count = shared.state.job_count * 2
+                shared.state.processing_has_refined_job_count = True
 
             if self.hr_second_pass_steps:
                 self.extra_generation_params["Hires steps"] = self.hr_second_pass_steps
@@ -1443,10 +1438,10 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
                 image: torch.Tensor = torch.from_numpy(np.expand_dims(image, axis=0))
                 image: torch.Tensor = image.to(shared.device, dtype=torch.float32)
 
-                if opts.sd_vae_encode_method != 'Full':
-                    self.extra_generation_params['VAE Encoder'] = opts.sd_vae_encode_method
+                if shared.opts.sd_vae_encode_method != 'Full':
+                    self.extra_generation_params['VAE Encoder'] = shared.opts.sd_vae_encode_method
 
-                samples = images_tensor_to_samples(image, approximation_indexes.get(opts.sd_vae_encode_method), self.sd_model)
+                samples = images_tensor_to_samples(image, approximation_indexes.get(shared.opts.sd_vae_encode_method), self.sd_model)
                 decoded_samples = None
                 devices.torch_gc()
 
@@ -1456,7 +1451,7 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             x: torch.Tensor = self.rng.next()
 
             self.sd_model.forge_objects = self.sd_model.forge_objects_after_applying_lora.shallow_copy()
-            apply_token_merging(self.sd_model, self.get_token_merging_ratio())
+            sd_models.apply_token_merging(self.sd_model, self.get_token_merging_ratio())
 
             if self.scripts is not None:
                 self.scripts.process_before_every_sampling(self,
@@ -1498,21 +1493,21 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         def save_intermediate(image, index) -> None:
             """saves image before applying hires fix, if enabled in options; takes as an argument either an image or batch with latent space images"""
 
-            if not self.save_samples() or not opts.save_images_before_highres_fix:
+            if not self.save_samples() or not shared.opts.save_images_before_highres_fix:
                 return
 
             if not isinstance(image, Image.Image):
                 image: Image.Image = sd_samplers.sample_to_image(image, index, approximation=0)
 
             info = create_infotext(self, self.all_prompts, self.all_seeds, self.all_subseeds, [], iteration=self.iteration, position_in_batch=index)
-            images.save_image(image, self.outpath_samples, "", seeds[index], prompts[index], opts.samples_format, info=info, p=self, suffix="-before-highres-fix")
+            images.save_image(image, self.outpath_samples, "", seeds[index], prompts[index], shared.opts.samples_format, info=info, p=self, suffix="-before-highres-fix")
 
         img2img_sampler_name: str = self.hr_sampler_name or self.sampler_name
 
         self.sampler = sd_samplers.create_sampler(img2img_sampler_name, self.sd_model)
 
         if self.latent_scale_mode is not None:
-            for i: int in range(samples.shape[0]):
+            for i in range(samples.shape[0]):
                 save_intermediate(samples, i)
 
             samples: torch.Tensor = torch.nn.functional.interpolate(samples, size=(target_height // opt_f, target_width // opt_f), mode=self.latent_scale_mode["mode"], antialias=self.latent_scale_mode["antialias"])
@@ -1542,9 +1537,9 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             decoded_samples: torch.Tensor = torch.from_numpy(np.array(batch_images))
             decoded_samples: torch.Tensor = decoded_samples.to(shared.device, dtype=torch.float32)
 
-            if opts.sd_vae_encode_method != 'Full':
-                self.extra_generation_params['VAE Encoder'] = opts.sd_vae_encode_method
-            samples = images_tensor_to_samples(decoded_samples, approximation_indexes.get(opts.sd_vae_encode_method))
+            if shared.opts.sd_vae_encode_method != 'Full':
+                self.extra_generation_params['VAE Encoder'] = shared.opts.sd_vae_encode_method
+            samples = images_tensor_to_samples(decoded_samples, approximation_indexes.get(shared.opts.sd_vae_encode_method))
 
             image_conditioning = self.img2img_image_conditioning(decoded_samples, samples)
 
@@ -1566,7 +1561,7 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             self.calculate_hr_conds()
 
         self.sd_model.forge_objects = self.sd_model.forge_objects_after_applying_lora.shallow_copy()
-        apply_token_merging(self.sd_model, self.get_token_merging_ratio(for_hr=True))
+        sd_models.apply_token_merging(self.sd_model, self.get_token_merging_ratio(for_hr=True))
 
         if self.scripts is not None:
             self.scripts.before_hr(self)
@@ -1596,7 +1591,7 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         super().close()
         self.hr_c = None
         self.hr_uc = None
-        if not opts.persistent_cond_cache:
+        if not shared.opts.persistent_cond_cache:
             StableDiffusionProcessingTxt2Img.cached_hr_uc: list[None] = [None, None]
             StableDiffusionProcessingTxt2Img.cached_hr_c: list[None] = [None, None]
 
@@ -1729,7 +1724,7 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
 
         self.image_mask = self.mask
         self.mask = None
-        self.initial_noise_multiplier = opts.initial_noise_multiplier if self.initial_noise_multiplier is None else self.initial_noise_multiplier
+        self.initial_noise_multiplier = shared.opts.initial_noise_multiplier if self.initial_noise_multiplier is None else self.initial_noise_multiplier
 
     @property
     def mask_blur(self):
@@ -1795,7 +1790,7 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
                     self.mask_for_overlay = None
                     self.inpaint_full_res = False
                     massage = 'Unable to perform "Inpaint Only mask" because mask is blank, switch to img2img mode.'
-                    model_hijack.comments.append(massage)
+                    modules.sd_hijack.model_hijack.comments.append(massage)
                     logging.info(massage)
             else:
                 image_mask = images.resize_image(self.resize_mode, image_mask, self.width, self.height)
@@ -1810,18 +1805,18 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
         if self.scripts is not None:
             self.scripts.before_process_init_images(self, dict(crop_region=crop_region, image_mask=image_mask))
 
-        add_color_corrections = opts.img2img_color_correction and self.color_corrections is None
+        add_color_corrections = shared.opts.img2img_color_correction and self.color_corrections is None
         if add_color_corrections:
             self.color_corrections = []
         imgs = []
         for img in self.init_images:
 
             # Save init image
-            if opts.save_init_img:
+            if shared.opts.save_init_img:
                 self.init_img_hash = hashlib.md5(img.tobytes()).hexdigest()
-                images.save_image(img, path=opts.outdir_init_images, basename=None, forced_filename=self.init_img_hash, save_to_dirs=False, existing_info=img.info)
+                images.save_image(img, path=shared.opts.outdir_init_images, basename=None, forced_filename=self.init_img_hash, save_to_dirs=False, existing_info=img.info)
 
-            image = images.flatten(img, opts.img2img_background_color)
+            image = images.flatten(img, shared.opts.img2img_background_color)
 
             if crop_region is None and self.resize_mode != 3:
                 image = images.resize_image(self.resize_mode, image, self.width, self.height)
@@ -1871,10 +1866,10 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
         image: torch.Tensor = torch.from_numpy(batch_images)
         image: torch.Tensor = image.to(shared.device, dtype=torch.float32)
 
-        if opts.sd_vae_encode_method != 'Full':
-            self.extra_generation_params['VAE Encoder'] = opts.sd_vae_encode_method
+        if shared.opts.sd_vae_encode_method != 'Full':
+            self.extra_generation_params['VAE Encoder'] = shared.opts.sd_vae_encode_method
 
-        self.init_latent = images_tensor_to_samples(image, approximation_indexes.get(opts.sd_vae_encode_method), self.sd_model)
+        self.init_latent = images_tensor_to_samples(image, approximation_indexes.get(shared.opts.sd_vae_encode_method), self.sd_model)
         devices.torch_gc()
 
         if self.resize_mode == 3:
@@ -1911,7 +1906,7 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
             x *= self.initial_noise_multiplier
 
         self.sd_model.forge_objects = self.sd_model.forge_objects_after_applying_lora.shallow_copy()
-        apply_token_merging(self.sd_model, self.get_token_merging_ratio())
+        sd_models.apply_token_merging(self.sd_model, self.get_token_merging_ratio())
 
         if self.scripts is not None:
             self.scripts.process_before_every_sampling(self,
@@ -1942,5 +1937,5 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
         return samples
 
     def get_token_merging_ratio(self, for_hr=False):
-        return self.token_merging_ratio or ("token_merging_ratio" in self.override_settings and opts.token_merging_ratio) or opts.token_merging_ratio_img2img or opts.token_merging_ratio
+        return self.token_merging_ratio or ("token_merging_ratio" in self.override_settings and shared.opts.token_merging_ratio) or shared.opts.token_merging_ratio_img2img or shared.opts.token_merging_ratio
 

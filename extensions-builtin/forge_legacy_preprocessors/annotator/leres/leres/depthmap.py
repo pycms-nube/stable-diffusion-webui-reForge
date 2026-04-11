@@ -2,7 +2,7 @@
 # https://github.com/thygate/stable-diffusion-webui-depthmap-script
 
 from modules import devices
-from modules.shared import opts
+import modules.shared as shared
 from torchvision.transforms import transforms
 from operator import getitem
 
@@ -380,7 +380,7 @@ def estimateboost(img, model, model_type, pix2pixmodel, max_res=512):
     
     # get settings
     if hasattr(opts, 'depthmap_script_boost_rmax'):
-        whole_size_threshold = opts.depthmap_script_boost_rmax
+        whole_size_threshold = shared.opts.depthmap_script_boost_rmax
         
     if model_type == 0: #leres
         net_receptive_field_size = 448

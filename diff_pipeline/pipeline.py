@@ -305,15 +305,26 @@ class DiffPipeline():
         self.model_sampling = unet_patcher.model.model_sampling
 
         from modules.shared_cmd_options import cmd_opts
-        # Sequential offload takes precedence over whole-model offload.
-        self._sequential_offload: bool = getattr(cmd_opts, 'forge_diffusers_sequential_offload', False)
+        # Priority: auto_offload > sequential_offload > offload > default (whole-model on device).
+        self._auto_offload: bool = getattr(cmd_opts, 'forge_diffusers_auto_offload', False)
+        self._sequential_offload: bool = (
+            getattr(cmd_opts, 'forge_diffusers_sequential_offload', False)
+            and not self._auto_offload
+        )
         self._offload: bool = (
             getattr(cmd_opts, 'forge_diffusers_offload', False)
             and not self._sequential_offload
+            and not self._auto_offload
         )
         self._seq_hooks_installed: bool = False
+        self._compiled: bool = False
 
-        self._hf_unet: UNet2DConditionModel  
+        # Auto-offload state — populated lazily on first apply_model() call.
+        self._auto_offload_ready: bool = False
+        self._b_hooks: list = []        # registered hook handles (removed on LoRA change)
+        self._b_block_paths: list = []  # Group B block paths (for logging)
+
+        self._hf_unet: UNet2DConditionModel
         log.info("DiffPipeline: building HF UNet2DConditionModel from checkpoint weights …")
         self._hf_unet = self._build_hf_unet(unet_patcher.model)
         self._install_attn_processors(self._hf_unet)
@@ -345,20 +356,6 @@ class DiffPipeline():
         key_map = unet_to_diffusers(unet_cfg)  # hf_key → ldm_key
 
         ldm_sd = ldm_model.diffusion_model.state_dict()
-
-        hf_sd: dict = {}
-        missing_ldm: list = []
-        for hf_key, ldm_key in key_map.items():
-            if ldm_key in ldm_sd:
-                hf_sd[hf_key] = ldm_sd[ldm_key]
-            else:
-                missing_ldm.append(hf_key)
-
-        if missing_ldm:
-            log.warning(
-                "DiffPipeline: %d HF keys had no matching LDM key (first 5: %s)",
-                len(missing_ldm), missing_ldm[:5],
-            )
 
         # Instantiate on CPU; moved to compute device in apply_model().
         hf_unet = UNet2DConditionModel(**_SDXL_HF_UNET_CONFIG)
@@ -482,18 +479,157 @@ class DiffPipeline():
         log.info(
             "DiffPipeline: sequential CPU offload hooks installed (execution device: %s)", device
         )
-    def _install_auto_offload_hooks(self) -> None:
+
+    # ------------------------------------------------------------------
+    # Auto device-map offload (--forge-diffusers-auto-offload)
+    # ------------------------------------------------------------------
+
+    def _iter_unet_blocks(self):
+        """Yield (path, setter, module) for each block-level child of the HF UNet.
+
+        For ModuleList children (down_blocks, up_blocks) yields one entry per
+        item so the granularity matches infer_auto_device_map output.
+        ``setter(m)`` replaces the entry in the UNet in-place (used when
+        swapping a block for its torch.compile'd wrapper).
         """
-        This is for replicate the same Forge auto try loading
-        Using accelerate
+        for name, child in self._hf_unet.named_children():
+            if isinstance(child, torch.nn.ModuleList):
+                for idx in range(len(child)):
+                    path = f"{name}.{idx}"
+                    # capture loop variables with distinct helper names
+                    def make_list_setter(lst, i):
+                        def setter(m): lst[i] = m
+                        return setter
+                    yield path, make_list_setter(child, idx), child[idx]
+            else:
+                def make_attr_setter(attr):
+                    def setter(m): setattr(self._hf_unet, attr, m)
+                    return setter
+                yield name, make_attr_setter(name), child
+
+    def _setup_auto_offload(self, device: torch.device) -> None:
+        """Partition UNet blocks into Group A (device) and Group B (CPU),
+        compile each group regionally, and install load/unload hooks on Group B.
+
+        Called lazily on the first ``apply_model()`` invocation so the compute
+        device is known.  Must be re-called (via ``_reset_auto_offload``) after
+        any structural change to the UNet (e.g. LoRA adapter swap).
         """
         from accelerate import infer_auto_device_map
-        for child in self._hf_unet.children():
-            infer_auto_device_map(child, offload_buffers=True, fallback_allocation=True)
-        
-        log.info(
-            "DiffPipeline: Auto device map is analyzed "
+
+        # --- 1. Determine max_memory budget ---
+        # infer_auto_device_map expects Dict[int | str, int | str] keys.
+        # Use str(device) (e.g. "cuda:0") rather than a torch.device object.
+        device_key = str(device)
+        if device.type == "cuda":
+            free_bytes, _ = torch.cuda.mem_get_info(device)
+            max_vram = int(free_bytes * 0.85)
+            max_memory: Optional[dict] = {device_key: max_vram, "cpu": "48GiB"}
+        elif device.type == "mps":
+            # MPS doesn't expose free memory; use a conservative fixed budget.
+            max_memory = {device_key: "8GiB", "cpu": "48GiB"}
+        else:
+            max_memory = None
+
+        # --- 2. Infer device map ---
+        # no_split_module_classes prevents splitting a Transformer or ResnetBlock
+        # across two devices, which would require cross-device tensor copies mid-block.
+        device_map: dict = infer_auto_device_map(
+            self._hf_unet,
+            max_memory=max_memory,
+            no_split_module_classes=["Transformer2DModel", "ResnetBlock2D"],
         )
+        log.info("DiffPipeline auto-offload: raw device_map = %s", device_map)
+
+        # --- 3. Classify each block into Group A or Group B ---
+        # A block is Group B if *any* of its leaf entries in device_map is "cpu".
+        group_a: list[tuple] = []   # (path, setter, module)
+        group_b: list[tuple] = []
+
+        for path, setter, module in self._iter_unet_blocks():
+            is_cpu = any(
+                str(dev) == "cpu"
+                for key, dev in device_map.items()
+                if key == path or key.startswith(path + ".")
+            )
+            if is_cpu:
+                group_b.append((path, setter, module))
+            else:
+                group_a.append((path, setter, module))
+
+        log.info(
+            "DiffPipeline auto-offload: Group A (device) = %s",
+            [p for p, _, _ in group_a],
+        )
+        log.info(
+            "DiffPipeline auto-offload: Group B (CPU offload) = %s",
+            [p for p, _, _ in group_b],
+        )
+
+        # --- 4. Move Group A to device; Group B stays on CPU ---
+        for _, _, module in group_a:
+            module.to(device=device)
+
+        # --- 5. Regional compile (skip MPS — Metal inductor issues) ---
+        # Compile BEFORE installing hooks so hooks attach to the OptimizedModule.
+        if device.type != "mps":
+            for path, setter, module in group_a + group_b:
+                compiled = torch.compile(module, mode="reduce-overhead", fullgraph=False)
+                setter(compiled)
+                log.debug("DiffPipeline auto-offload: compiled block '%s'", path)
+
+        # --- 6. Install load/unload hooks on Group B ---
+        # Re-fetch modules after possible compile replacement.
+        self._b_hooks.clear()
+        self._b_block_paths.clear()
+
+        # Build a name→module lookup after compile replacements.
+        # named_modules() walks the entire tree; we only need direct matches.
+        unet_module_map: dict[str, torch.nn.Module] = {
+            n: m for n, m in self._hf_unet.named_modules() if n
+        }
+
+        for path, *_ in group_b:
+            current = unet_module_map.get(path)
+            if current is None:
+                log.warning(
+                    "DiffPipeline auto-offload: could not resolve Group B path '%s' "
+                    "after compile — skipping hooks for this block", path
+                )
+                continue
+
+            def make_hooks(dev: torch.device):
+                def pre_hook(m: torch.nn.Module, inp: Any) -> None:
+                    m.to(device=dev)
+                def post_hook(m: torch.nn.Module, inp: Any, out: Any) -> None:
+                    m.to(device="cpu")
+                return pre_hook, post_hook
+
+            pre_fn, post_fn = make_hooks(device)
+            pre_handle = current.register_forward_pre_hook(pre_fn)
+            post_handle = current.register_forward_hook(post_fn)
+            self._b_hooks.extend([pre_handle, post_handle])
+            self._b_block_paths.append(path)
+
+        self._auto_offload_ready = True
+        log.info(
+            "DiffPipeline auto-offload: setup complete — %d Group-A blocks, "
+            "%d Group-B blocks, %d hooks installed",
+            len(group_a), len(group_b), len(self._b_hooks),
+        )
+
+    def _reset_auto_offload(self) -> None:
+        """Remove Group B hooks and mark auto-offload as needing re-setup.
+
+        Called whenever the UNet structure changes (e.g. LoRA adapter swap)
+        so that ``_setup_auto_offload`` re-runs on the next forward pass.
+        """
+        for handle in self._b_hooks:
+            handle.remove()
+        self._b_hooks.clear()
+        self._b_block_paths.clear()
+        self._auto_offload_ready = False
+
     # ------------------------------------------------------------------
     # Phase 5 — LoRA synchronisation
     # ------------------------------------------------------------------
@@ -539,7 +675,7 @@ class DiffPipeline():
         patches = getattr(active_patcher, "patches", {})
         patches_uuid = getattr(active_patcher, "patches_uuid", None)
 
-        log.warning(
+        log.debug(
             "[_sync_lora] active_patcher id=%d patches_keys=%d patches_uuid=%s synced_uuid=%s same=%s",
             id(active_patcher), len(patches), patches_uuid, self._synced_patches_uuid,
             patches_uuid == self._synced_patches_uuid,
@@ -550,12 +686,14 @@ class DiffPipeline():
 
         self._remove_lora_adapters()
         self._synced_patches_uuid = patches_uuid
+        # LoRA adapter changes structurally modify the UNet (delete_adapter /
+        # load_lora_adapter), so any existing compiled graph is invalid.
+        # Force a recompile on the next forward pass.
+        self._compiled = False
 
         if not patches:
             return
-        
-        # Before a change, we need to clear all mapping and just move to same device
-        
+
         max_depth = max(len(v) for v in patches.values())
 
         for depth in range(max_depth):
@@ -605,13 +743,7 @@ class DiffPipeline():
             names = [n for n, _ in self._active_adapters]
             weights = [w for _, w in self._active_adapters]
             self._hf_unet.set_adapters(names, weights)
-            # This provide general Torch compile capibability by fusing
-            self._hf_unet.fuse_lora(adapter_names=names, lora_scale=1.0)
-            log.warning("DIFFUSER NOW FUSE LORA INTO U-NET")
-            
-            log.warning("No LORAS UNLOAD, NOT HOTSWAP")
-        # Before leave, do auto mapping
-        self._install_auto_offload_hooks()
+            log.info("DiffPipeline: activated %d LoRA adapter(s): %s", len(names), names)
     # ------------------------------------------------------------------
     # Public interface (mirrors BaseModel.apply_model signature)
     # ------------------------------------------------------------------
@@ -721,10 +853,12 @@ class DiffPipeline():
         # --- 5. LoRA sync (Phase 5) ---
         self._sync_lora()
         
-        DEBUG = 1
         # --- 6. HF UNet forward ---
-        if DEBUG == 1:
+        # Compile once on first call; skip on MPS (inductor Metal codegen does not
+        # support dynamic threadgroup sizes, causing a SyntaxError at runtime).
+        if not self._compiled and device.type != "mps":
             self._hf_unet.compile()
+            self._compiled = True
 
         unet_output = self._hf_unet(
             sample=xc,

@@ -4,7 +4,8 @@ from pydantic import BaseModel, Field, create_model
 from typing import Any, Optional, Literal
 from inflection import underscore
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img
-from modules.shared import sd_upscalers, opts, parser
+from modules.shared import sd_upscalers, parser
+import modules.shared as shared
 
 API_NOT_ALLOWED = [
     "self",
@@ -206,17 +207,30 @@ class TrainResponse(BaseModel):
 class CreateResponse(BaseModel):
     info: str = Field(title="Create info", description="Response string from create embedding or hypernetwork task.")
 
-fields = {}
-for key, metadata in opts.data_labels.items():
-    value = opts.data.get(key)
-    optType = opts.typemap.get(type(metadata.default), type(metadata.default)) if metadata.default else Any
+_OptionsModel = None
 
-    if metadata is not None:
-        fields.update({key: (Optional[optType], Field(default=metadata.default, description=metadata.label))})
-    else:
-        fields.update({key: (Optional[optType], Field())})
+def _build_options_model():
+    global _OptionsModel
+    if _OptionsModel is not None:
+        return _OptionsModel
+    fields = {}
+    for key, metadata in shared.opts.data_labels.items():
+        optType = shared.opts.typemap.get(type(metadata.default), type(metadata.default)) if metadata.default else Any
+        if metadata is not None:
+            fields[key] = (Optional[optType], Field(default=metadata.default, description=metadata.label))
+        else:
+            fields[key] = (Optional[optType], Field())
+    _OptionsModel = create_model("Options", **fields)
+    return _OptionsModel
 
-OptionsModel = create_model("Options", **fields)
+class _OptionsModelProxy:
+    """Lazy proxy so models.OptionsModel works as a type reference after opts is initialized."""
+    def __getattr__(self, name):
+        return getattr(_build_options_model(), name)
+    def __call__(self, *args, **kwargs):
+        return _build_options_model()(*args, **kwargs)
+
+OptionsModel = _OptionsModelProxy()
 
 flags = {}
 _options = vars(parser)['_option_string_actions']

@@ -173,6 +173,16 @@ parser.add_argument(
     default=False,
 )
 parser.add_argument(
+    "--forge-diffusers-auto-offload",
+    action="store_true",
+    help="When using --forge-diffusers-pipeline, use infer_auto_device_map to split the UNet "
+         "across VRAM and RAM. Blocks that fit in VRAM (Group A) stay on device permanently; "
+         "overflow blocks (Group B) load to device on-demand via forward hooks and return to CPU "
+         "immediately after. Each group is compiled regionally with torch.compile. "
+         "Takes precedence over --forge-diffusers-offload and --forge-diffusers-sequential-offload.",
+    default=False,
+)
+parser.add_argument(
     "--allow-download",
     action="store_true",
     help="Allow huggingface_hub / diffusers / transformers to download files from the internet. "

@@ -4,7 +4,7 @@ import os
 import gradio as gr
 import torch
 from modules import scripts, shared
-from modules.shared import opts
+import modules.shared as shared
 from ldm_patched.modules import model_sampling
 from advanced_model_sampling.nodes_model_advanced import (
     ModelSamplingDiscrete, ModelSamplingContinuousEDM, ModelSamplingContinuousV,
@@ -537,13 +537,12 @@ class AdvancedModelSamplingScript(scripts.Script):
 
                 # Handle extra noise
                 from modules.script_callbacks import ExtraNoiseParams, extra_noise_callback
-                from modules.shared import opts
-                if opts.img2img_extra_noise > 0:
-                    p.extra_generation_params["Extra noise"] = opts.img2img_extra_noise
+                if shared.opts.img2img_extra_noise > 0:
+                    p.extra_generation_params["Extra noise"] = shared.opts.img2img_extra_noise
                     extra_noise_params = ExtraNoiseParams(noise, x, xi)
                     extra_noise_callback(extra_noise_params)
                     noise = extra_noise_params.noise
-                    xi += noise * opts.img2img_extra_noise
+                    xi += noise * shared.opts.img2img_extra_noise
 
                 # Continue with the rest of the sampling setup
                 extra_params_kwargs = sampler.initialize(p)
@@ -563,7 +562,7 @@ class AdvancedModelSamplingScript(scripts.Script):
                     noise_sampler = sampler.create_noise_sampler(x, sigmas, p)
                     extra_params_kwargs['noise_sampler'] = noise_sampler
 
-                if opts.sd_sampling == "A1111":
+                if shared.opts.sd_sampling == "A1111":
                     if sampler.config.options.get('solver_type', None) == 'heun':
                         extra_params_kwargs['solver_type'] = 'heun'
 

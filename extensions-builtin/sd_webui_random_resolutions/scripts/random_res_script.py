@@ -4,7 +4,7 @@ import random
 import json
 import os
 from modules import rng
-from modules.shared import opts
+import modules.shared as shared
 import math
 
 class AspectRatioPreset:

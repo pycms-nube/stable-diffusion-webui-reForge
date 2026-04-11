@@ -14,7 +14,6 @@ import gradio as gr
 
 from modules import images, sd_samplers, processing, sd_models, sd_vae, sd_schedulers, errors
 from modules.processing import process_images, Processed, StableDiffusionProcessingTxt2Img
-from modules.shared import opts, state
 import modules.shared as shared
 import modules.sd_samplers
 import modules.sd_models
@@ -247,9 +246,9 @@ axis_options = [
     AxisOptionImg2Img("Image CFG Scale", float, apply_field("image_cfg_scale")),
     AxisOption("Prompt S/R", str, apply_prompt, format_value=format_value),
     AxisOption("Prompt order", str_permutations, apply_order, format_value=format_value_join_list),
-    AxisOptionTxt2Img("Sampler", str, apply_field("sampler_name"), format_value=format_value, confirm=confirm_samplers, choices=lambda: [x.name for x in sd_samplers.samplers if x.name not in opts.hide_samplers]),
-    AxisOptionTxt2Img("Hires sampler", str, apply_field("hr_sampler_name"), confirm=confirm_samplers, choices=lambda: [x.name for x in sd_samplers.samplers_for_img2img if x.name not in opts.hide_samplers]),
-    AxisOptionImg2Img("Sampler", str, apply_field("sampler_name"), format_value=format_value, confirm=confirm_samplers, choices=lambda: [x.name for x in sd_samplers.samplers_for_img2img if x.name not in opts.hide_samplers]),
+    AxisOptionTxt2Img("Sampler", str, apply_field("sampler_name"), format_value=format_value, confirm=confirm_samplers, choices=lambda: [x.name for x in sd_samplers.samplers if x.name not in shared.opts.hide_samplers]),
+    AxisOptionTxt2Img("Hires sampler", str, apply_field("hr_sampler_name"), confirm=confirm_samplers, choices=lambda: [x.name for x in sd_samplers.samplers_for_img2img if x.name not in shared.opts.hide_samplers]),
+    AxisOptionImg2Img("Sampler", str, apply_field("sampler_name"), format_value=format_value, confirm=confirm_samplers, choices=lambda: [x.name for x in sd_samplers.samplers_for_img2img if x.name not in shared.opts.hide_samplers]),
     AxisOption("Checkpoint name", str, apply_checkpoint, format_value=format_remove_path, confirm=confirm_checkpoints, cost=1.0, choices=lambda: sorted(sd_models.checkpoints_list, key=str.casefold)),
     AxisOption("Negative Guidance minimum sigma", float, apply_field("s_min_uncond")),
     AxisOption("Sigma Churn", float, apply_field("s_churn")),
@@ -300,7 +299,7 @@ def draw_xyz_grid(p, xs, ys, zs, x_labels, y_labels, z_labels, cell, draw_legend
 
     processed_result = None
 
-    state.job_count = list_size * p.n_iter
+    shared.state.job_count = list_size * p.n_iter
 
     @staticmethod
     def draw_label_on_image(image, text):
@@ -351,7 +350,7 @@ def draw_xyz_grid(p, xs, ys, zs, x_labels, y_labels, z_labels, cell, draw_legend
         def index(ix, iy, iz):
             return ix + iy * len(xs) + iz * len(xs) * len(ys)
 
-        state.job = f"{index(ix, iy, iz) + 1} out of {list_size}"
+        shared.state.job = f"{index(ix, iy, iz) + 1} out of {list_size}"
 
         processed: Processed = cell(x, y, z, ix, iy, iz)
 
@@ -627,7 +626,7 @@ class Script(scripts.Script):
         if not no_fixed_seeds:
             modules.processing.fix_seed(p)
 
-        if not opts.return_grid:
+        if not shared.opts.return_grid:
             p.batch_size = 1
 
         if skip_grid:
@@ -722,7 +721,7 @@ class Script(scripts.Script):
         # this could be moved to common code, but unlikely to be ever triggered anywhere else
         Image.MAX_IMAGE_PIXELS = None  # disable check in Pillow and rely on check below to allow large custom image sizes
         grid_mp = round(len(xs) * len(ys) * len(zs) * p.width * p.height / 1000000)
-        assert grid_mp < opts.img_max_size_mp, f'Error: Resulting grid would be too large ({grid_mp} MPixels) (max configured size is {opts.img_max_size_mp} MPixels)'
+        assert grid_mp < shared.opts.img_max_size_mp, f'Error: Resulting grid would be too large ({grid_mp} MPixels) (max configured size is {shared.opts.img_max_size_mp} MPixels)'
 
         def fix_axis_seeds(axis_opt, axis_list):
             if axis_opt.label in ['Seed', 'Var. seed']:
@@ -764,9 +763,9 @@ class Script(scripts.Script):
         print(f"X/Y/Z plot will create {len(xs) * len(ys) * len(zs) * image_cell_count} images on {len(zs)} {len(xs)}x{len(ys)} grid{plural_s}{cell_console_text}. (Total steps to process: {total_steps})")
         shared.total_tqdm.updateTotal(total_steps)
 
-        state.xyz_plot_x = AxisInfo(x_opt, xs)
-        state.xyz_plot_y = AxisInfo(y_opt, ys)
-        state.xyz_plot_z = AxisInfo(z_opt, zs)
+        shared.state.xyz_plot_x = AxisInfo(x_opt, xs)
+        shared.state.xyz_plot_y = AxisInfo(y_opt, ys)
+        shared.state.xyz_plot_z = AxisInfo(z_opt, zs)
 
         # If one of the axes is very slow to change between (like SD model
         # checkpoint), then make sure it is in the outer iteration of the nested
@@ -795,7 +794,7 @@ class Script(scripts.Script):
         grid_infotext = [None] * (1 + len(zs))
 
         def cell(x, y, z, ix, iy, iz):
-            if shared.state.interrupted or state.stopping_generation:
+            if shared.state.interrupted or shared.state.stopping_generation:
                 return Processed(p, [], p.seed, "")
             
             pc = copy(p)
@@ -866,13 +865,13 @@ class Script(scripts.Script):
                     filename = f"xyz_grid_x{ix}_y{iy}_z{iz}"
                     
                     # Save the labeled image
-                    if opts.grid_save:
+                    if shared.opts.grid_save:
                         images.save_image(
                             labeled_image,
                             p.outpath_grids,
                             filename,
                             info=res.infotexts[0],
-                            extension=opts.grid_format,
+                            extension=shared.opts.grid_format,
                             prompt=res.all_prompts[0],
                             seed=res.all_seeds[0],
                             grid=False,
@@ -981,7 +980,7 @@ class Script(scripts.Script):
                             chunk_processed.infotexts = [chunk_processed.infotexts[0]]
 
                         # Save images immediately
-                        if opts.grid_save:
+                        if shared.opts.grid_save:
                             for i, image in enumerate(chunk_processed.images):
                                 suffix = "" if i == 0 else f"_{i}"
                                 images.save_image(
@@ -989,7 +988,7 @@ class Script(scripts.Script):
                                     p.outpath_grids, 
                                     f"xyz_grid_{chunk_idx+1}{suffix}", 
                                     info=chunk_processed.infotexts[i],
-                                    extension=opts.grid_format,
+                                    extension=shared.opts.grid_format,
                                     prompt=chunk_processed.all_prompts[i],
                                     seed=chunk_processed.all_seeds[i],
                                     grid=True if i == 0 else False,
@@ -1030,7 +1029,7 @@ class Script(scripts.Script):
                 for iz, z in enumerate(zs):
                     for iy, y in enumerate(ys):
                         for ix, x in enumerate(xs):
-                            if state.interrupted:
+                            if shared.state.interrupted:
                                 break
                                 
                             proc = cell(x, y, z, ix, iy, iz)
@@ -1043,7 +1042,7 @@ class Script(scripts.Script):
                             done += 1
                             print(f"Processing image {done}/{total}")
                             
-                if opts.grid_save:
+                if shared.opts.grid_save:
                     # Save individual images
                     for i, image in enumerate(processed.images):
                         images.save_image(
@@ -1051,7 +1050,7 @@ class Script(scripts.Script):
                             p.outpath_grids,
                             f"xyz_image_{i+1}",
                             info=processed.infotexts[i],
-                            extension=opts.grid_format,
+                            extension=shared.opts.grid_format,
                             prompt=processed.all_prompts[i],
                             seed=processed.all_seeds[i],
                             grid=False,
@@ -1088,14 +1087,14 @@ class Script(scripts.Script):
                 # Set the grid infotexts to the real ones with extra_generation_params
                 processed.infotexts[:1 + z_count] = grid_infotext[:1 + z_count]
 
-                if opts.grid_save:
+                if shared.opts.grid_save:
                     # Save the main xyz grid
                     images.save_image(
                         processed.images[0],
                         p.outpath_grids,
                         "xyz_grid",
                         info=processed.infotexts[0],
-                        extension=opts.grid_format,
+                        extension=shared.opts.grid_format,
                         prompt=processed.all_prompts[0],
                         seed=processed.all_seeds[0],
                         grid=True,
@@ -1110,7 +1109,7 @@ class Script(scripts.Script):
                                 p.outpath_grids,
                                 f"xyz_grid_z_{idx}",
                                 info=processed.infotexts[idx],
-                                extension=opts.grid_format,
+                                extension=shared.opts.grid_format,
                                 prompt=processed.all_prompts[idx],
                                 seed=processed.all_seeds[idx],
                                 grid=True,
@@ -1131,7 +1130,7 @@ class Script(scripts.Script):
                                 p.outpath_grids,
                                 f"xyz_grid_image_{idx + 1}",
                                 info=info,
-                                extension=opts.grid_format,
+                                extension=shared.opts.grid_format,
                                 prompt=prompt,
                                 seed=seed,
                                 grid=False,

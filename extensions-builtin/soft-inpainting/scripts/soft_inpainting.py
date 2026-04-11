@@ -739,7 +739,7 @@ class Script(scripts.Script):
             return
 
         from modules import images
-        from modules.shared import opts
+        import modules.shared as shared
 
         settings = SoftInpaintingSettings(power, scale, detail_preservation, mask_inf, dif_thresh, dif_contr)
 
@@ -748,7 +748,7 @@ class Script(scripts.Script):
         self.overlay_images = []
         for img in p.init_images:
 
-            image = images.flatten(img, opts.img2img_background_color)
+            image = images.flatten(img, shared.opts.img2img_background_color)
 
             if p.paste_to is None and p.resize_mode != 3:
                 image = images.resize_image(p.resize_mode, image, p.width, p.height)

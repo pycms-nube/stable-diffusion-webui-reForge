@@ -5,25 +5,18 @@ from scipy import stats
 import math
 
 from modules import shared
+from modules.sd_sampling_backend import get_sampling
 
-if shared.opts.sd_sampling == "A1111":
-    import k_diff.k_diffusion
-    from k_diff.k_diffusion.sampling import append_zero
-    from k_diff.k_diffusion import sampling
-elif shared.opts.sd_sampling == "ldm patched (Comfy)":
-    import ldm_patched.k_diffusion
-    from ldm_patched.k_diffusion.sampling import append_zero
-    from ldm_patched.k_diffusion import sampling
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
     return (x - denoised) / sigma
 
 
-if shared.opts.sd_sampling == "A1111":
-    k_diff.k_diffusion.sampling.to_d = to_d
-elif shared.opts.sd_sampling == "ldm patched (Comfy)":
-    ldm_patched.k_diffusion.sampling.to_d = to_d
+def _get_sampling():
+    _s = get_sampling()
+    _s.to_d = to_d
+    return _s
 
 
 @dataclasses.dataclass
@@ -53,18 +46,18 @@ def sgm_uniform(n, sigma_min, sigma_max, inner_model, device):
 
 def get_sigmas_karras(n, sigma_min, sigma_max, rho=7., device='cpu'):
     rho = shared.opts.karras_rho
-    return ldm_patched.k_diffusion.sampling.get_sigmas_karras(n, sigma_min, sigma_max, rho, device)
+    return _get_sampling().get_sigmas_karras(n, sigma_min, sigma_max, rho, device)
 
 def get_sigmas_exponential(n, sigma_min, sigma_max, device='cpu'):
     shrink_factor = shared.opts.exponential_shrink_factor
     sigmas = torch.linspace(math.log(sigma_max), math.log(sigma_min), n, device=device).exp()
     sigmas = sigmas * torch.exp(shrink_factor * torch.linspace(0, 1, n, device=device))
-    return append_zero(sigmas)
+    return _get_sampling().append_zero(sigmas)
 
 
 def get_sigmas_polyexponential(n, sigma_min, sigma_max, device='cpu'):
     rho = shared.opts.polyexponential_rho
-    return ldm_patched.k_diffusion.sampling.get_sigmas_polyexponential(n, sigma_min, sigma_max, rho, device)
+    return _get_sampling().get_sigmas_polyexponential(n, sigma_min, sigma_max, rho, device)
 
 
 def get_sigmas_sinusoidal_sf(n, sigma_min, sigma_max, device='cpu'):
@@ -342,9 +335,9 @@ def get_sigmas_karras_dynamic(n, sigma_min, sigma_max, device='cpu'):
 
 schedulers = [
     Scheduler('automatic', 'Automatic', None),
-    Scheduler('karras', 'Karras', sampling.get_sigmas_karras, default_rho=7.0),
-    Scheduler('exponential', 'Exponential', sampling.get_sigmas_exponential),
-    Scheduler('polyexponential', 'Polyexponential', sampling.get_sigmas_polyexponential, default_rho=1.0),
+    Scheduler('karras', 'Karras', get_sigmas_karras, default_rho=7.0),
+    Scheduler('exponential', 'Exponential', get_sigmas_exponential),
+    Scheduler('polyexponential', 'Polyexponential', get_sigmas_polyexponential, default_rho=1.0),
     Scheduler('sinusoidal_sf', 'Sinusoidal SF', get_sigmas_sinusoidal_sf),
     Scheduler('invcosinusoidal_sf', 'Invcosinusoidal SF', get_sigmas_invcosinusoidal_sf),
     Scheduler('react_cosinusoidal_dynsf', 'React Cosinusoidal DynSF', get_sigmas_react_cosinusoidal_dynsf),

@@ -5,8 +5,6 @@ import time
 import gradio as gr
 from pydantic import BaseModel, Field
 
-from modules.shared import opts
-
 import modules.shared as shared
 from collections import OrderedDict
 import string
@@ -116,14 +114,14 @@ def progressapi(req: ProgressRequest):
     live_preview = None
     id_live_preview = req.id_live_preview
 
-    if opts.live_previews_enable and req.live_preview:
+    if shared.opts.live_previews_enable and req.live_preview:
         shared.state.set_current_image()
         if shared.state.id_live_preview != req.id_live_preview:
             image = shared.state.current_image
             if image is not None:
                 buffered = io.BytesIO()
 
-                if opts.live_previews_image_format == "png":
+                if shared.opts.live_previews_image_format == "png":
                     # using optimize for large images takes an enormous amount of time
                     if max(*image.size) <= 256:
                         save_kwargs = {"optimize": True}
@@ -133,9 +131,9 @@ def progressapi(req: ProgressRequest):
                 else:
                     save_kwargs = {}
 
-                image.save(buffered, format=opts.live_previews_image_format, **save_kwargs)
+                image.save(buffered, format=shared.opts.live_previews_image_format, **save_kwargs)
                 base64_image = base64.b64encode(buffered.getvalue()).decode('ascii')
-                live_preview = f"data:image/{opts.live_previews_image_format};base64,{base64_image}"
+                live_preview = f"data:image/{shared.opts.live_previews_image_format};base64,{base64_image}"
                 id_live_preview = shared.state.id_live_preview
 
     return ProgressResponse(active=active, queued=queued, completed=completed, progress=progress, eta=eta, live_preview=live_preview, id_live_preview=id_live_preview, textinfo=shared.state.textinfo)

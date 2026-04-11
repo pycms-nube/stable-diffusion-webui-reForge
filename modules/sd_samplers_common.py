@@ -3,14 +3,11 @@ from collections import namedtuple
 import numpy as np
 import torch
 from PIL import Image
-from modules import devices, images, sd_vae_approx, sd_samplers, sd_vae_taesd, shared, sd_models
-from modules.shared import opts, state
+from modules import devices, images, sd_vae_approx, sd_samplers, sd_vae_taesd, shared
+import modules.shared as shared
 from modules_forge.forge_sampler import sampling_prepare, sampling_cleanup
 from modules import extra_networks
-if opts.sd_sampling == "A1111":
-    from k_diff.k_diffusion import sampling
-elif opts.sd_sampling == "ldm patched (Comfy)":
-    from ldm_patched.k_diffusion import sampling as sampling
+from modules.sd_sampling_backend import get_sampling
 
 SamplerDataTuple = namedtuple('SamplerData', ['name', 'constructor', 'aliases', 'options'])
 
@@ -24,7 +21,7 @@ class SamplerData(SamplerDataTuple):
 
 
 def setup_img2img_steps(p, steps=None):
-    if opts.img2img_fix_steps or steps is not None:
+    if shared.opts.img2img_fix_steps or steps is not None:
         requested_steps = (steps or p.steps)
         steps = int(requested_steps / min(p.denoising_strength, 0.999)) if p.denoising_strength > 0 else 0
         t_enc = requested_steps - 1
@@ -64,8 +61,8 @@ def _pca_project_latent(sample):
 def samples_to_images_tensor(sample, approximation=None, model=None):
     """Transforms 4-channel latent space images into 3-channel RGB image tensors, with values in range [-1, 1]."""
 
-    if approximation is None or (shared.state.interrupted and opts.live_preview_fast_interrupt):
-        approximation = approximation_indexes.get(opts.show_progress_type, 0)
+    if approximation is None or (shared.state.interrupted and shared.opts.live_preview_fast_interrupt):
+        approximation = approximation_indexes.get(shared.opts.show_progress_type, 0)
         if approximation == 0:
             approximation = 1
 
@@ -101,7 +98,7 @@ def single_sample_to_image(sample, approximation=None):
 
 
 def decode_first_stage(model, x):
-    approx_index = approximation_indexes.get(opts.sd_vae_decode_method, 0)
+    approx_index = approximation_indexes.get(shared.opts.sd_vae_decode_method, 0)
     return samples_to_images_tensor(x, approx_index, model)
 
 
@@ -116,7 +113,7 @@ def samples_to_image_grid(samples, approximation=None):
 def images_tensor_to_samples(image, approximation=None, model=None):
     '''image[0, 1] -> latent'''
     if approximation is None:
-        approximation = approximation_indexes.get(opts.sd_vae_encode_method, 0)
+        approximation = approximation_indexes.get(shared.opts.sd_vae_encode_method, 0)
 
     if approximation == 3:
         image = image.to(devices.device, devices.dtype)
@@ -141,9 +138,9 @@ def images_tensor_to_samples(image, approximation=None, model=None):
 
 
 def store_latent(decoded):
-    state.current_latent = decoded
+    shared.state.current_latent = decoded
 
-    if opts.live_previews_enable and opts.show_progress_every_n_steps > 0 and shared.state.sampling_step % opts.show_progress_every_n_steps == 0:
+    if shared.opts.live_previews_enable and shared.opts.show_progress_every_n_steps > 0 and shared.state.sampling_step % shared.opts.show_progress_every_n_steps == 0:
         if not shared.parallel_processing_allowed:
             shared.state.assign_current_image(sample_to_image(decoded))
 
@@ -184,7 +181,8 @@ replace_torchsde_browinan()
 
 
 def apply_refiner(cfg_denoiser, x, sigma=None):
-    if opts.refiner_switch_by_sample_steps or sigma is None:
+    from modules import sd_models  # local import to avoid circular dependency
+    if shared.opts.refiner_switch_by_sample_steps or sigma is None:
         completed_ratio = cfg_denoiser.step / cfg_denoiser.total_steps
     else:
         # Ensure sigma is on the same device as cfg_denoiser.inner_model.sigmas
@@ -208,14 +206,14 @@ def apply_refiner(cfg_denoiser, x, sigma=None):
     if getattr(cfg_denoiser.p, "enable_hr", False):
         is_second_pass = cfg_denoiser.p.is_hr_pass
 
-        if opts.hires_fix_refiner_pass == "first pass" and is_second_pass:
+        if shared.opts.hires_fix_refiner_pass == "first pass" and is_second_pass:
             return False
 
-        if opts.hires_fix_refiner_pass == "second pass" and not is_second_pass:
+        if shared.opts.hires_fix_refiner_pass == "second pass" and not is_second_pass:
             return False
 
-        if opts.hires_fix_refiner_pass != "second pass":
-            cfg_denoiser.p.extra_generation_params['Hires refiner'] = opts.hires_fix_refiner_pass
+        if shared.opts.hires_fix_refiner_pass != "second pass":
+            cfg_denoiser.p.extra_generation_params['Hires refiner'] = shared.opts.hires_fix_refiner_pass
 
     cfg_denoiser.p.extra_generation_params['Refiner'] = refiner_checkpoint_info.short_title
     cfg_denoiser.p.extra_generation_params['Refiner switch at'] = refiner_switch_at
@@ -298,14 +296,14 @@ class Sampler:
         if self.stop_at is not None and step > self.stop_at:
             raise InterruptedException
 
-        state.sampling_step = step
+        shared.state.sampling_step = step
         shared.total_tqdm.update()
 
     def launch_sampling(self, steps, func):
         self.model_wrap_cfg.steps = steps
         self.model_wrap_cfg.total_steps = self.config.total_steps(steps)
-        state.sampling_steps = steps
-        state.sampling_step = 0
+        shared.state.sampling_steps = steps
+        shared.state.sampling_step = 0
 
         try:
             return func()
@@ -329,9 +327,10 @@ class Sampler:
         self.model_wrap_cfg.nmask = p.nmask if hasattr(p, 'nmask') else None
         self.model_wrap_cfg.step = 0
         self.model_wrap_cfg.image_cfg_scale = getattr(p, 'image_cfg_scale', None)
-        self.eta = p.eta if p.eta is not None else getattr(opts, self.eta_option_field, 0.0)
+        self.eta = p.eta if p.eta is not None else getattr(shared.opts, self.eta_option_field, 0.0)
         self.s_min_uncond = getattr(p, 's_min_uncond', 0.0)
 
+        sampling = get_sampling()
         sampling.torch = TorchHijack(p)
 
         extra_params_kwargs = {}
@@ -347,23 +346,23 @@ class Sampler:
 
         # Handle special parameters for DPM++ samplers
         if self.funcname == 'sample_dpmpp_sde':
-            r = getattr(opts, 'dpmpp_sde_r', self.dpmpp_sde_r)
+            r = getattr(shared.opts,'dpmpp_sde_r', self.dpmpp_sde_r)
             if r != self.dpmpp_sde_r:
                 extra_params_kwargs['r'] = r
                 p.extra_generation_params['DPM++ SDE r'] = r
 
         if self.funcname == 'sample_dpmpp_2m_sde':
-            solver_type = getattr(opts, 'dpmpp_2m_sde_solver', self.dpmpp_2m_sde_solver)
+            solver_type = getattr(shared.opts,'dpmpp_2m_sde_solver', self.dpmpp_2m_sde_solver)
             if solver_type != self.dpmpp_2m_sde_solver:
                 extra_params_kwargs['solver_type'] = solver_type
                 p.extra_generation_params['DPM++ 2M solver'] = solver_type
 
         # Handle standard sigma parameters
         if len(self.extra_params) > 0:
-            s_churn = getattr(opts, 's_churn', p.s_churn)
-            s_tmin = getattr(opts, 's_tmin', p.s_tmin)
-            s_tmax = getattr(opts, 's_tmax', p.s_tmax) or self.s_tmax  # 0 = inf
-            s_noise = getattr(opts, 's_noise', p.s_noise)
+            s_churn = getattr(shared.opts,'s_churn', p.s_churn)
+            s_tmin = getattr(shared.opts,'s_tmin', p.s_tmin)
+            s_tmax = getattr(shared.opts,'s_tmax', p.s_tmax) or self.s_tmax  # 0 = inf
+            s_noise = getattr(shared.opts,'s_noise', p.s_noise)
 
             if 's_churn' in extra_params_kwargs and s_churn != self.s_churn:
                 extra_params_kwargs['s_churn'] = s_churn
@@ -389,10 +388,7 @@ class Sampler:
         if shared.opts.no_dpmpp_sde_batch_determinism:
             return None
 
-        if opts.sd_sampling == "A1111":
-            from k_diff.k_diffusion.sampling import BrownianTreeNoiseSampler
-        elif opts.sd_sampling == "ldm patched (Comfy)":
-            from ldm_patched.k_diffusion.sampling import BrownianTreeNoiseSampler
+        BrownianTreeNoiseSampler = get_sampling().BrownianTreeNoiseSampler
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
         current_iter_seeds = p.all_seeds[p.iteration * p.batch_size:(p.iteration + 1) * p.batch_size]
         return BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=current_iter_seeds)

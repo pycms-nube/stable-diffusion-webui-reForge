@@ -22,7 +22,7 @@ from torch import no_grad, FloatTensor
 from typing import Protocol, Optional, Dict, Any, TypedDict, NamedTuple, List
 from itertools import pairwise
 from ldm_patched.modules.model_sampling import CONST
-from modules.shared import opts
+import modules.shared as shared
 import numpy as np
 
 from modules.sd_samplers_kdiffusion_smea import Rescaler
@@ -229,7 +229,7 @@ def to_d(x, sigma, denoised):
 def get_ancestral_step(sigma_from, sigma_to, eta=None):
     """Calculates the noise level (sigma_down) to step down to and the amount
     of noise to add (sigma_up) when doing an ancestral sampling step."""
-    eta = eta if eta is not None else opts.ancestral_eta
+    eta = eta if eta is not None else shared.opts.ancestral_eta
     if not eta:
         return sigma_to, 0.
     sigma_up = min(sigma_to, eta * (sigma_to ** 2 * (sigma_from ** 2 - sigma_to ** 2) / sigma_from ** 2) ** 0.5)

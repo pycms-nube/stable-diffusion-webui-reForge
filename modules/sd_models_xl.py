@@ -62,6 +62,7 @@ def encode_embedding_init_text(self: sgm.modules.GeneralConditioner, init_text, 
         encoded = embedder.encode_embedding_init_text(init_text, nvpt)
         res.append(encoded)
 
+    res = [t.to(devices.device) for t in res]
     return torch.cat(res, dim=1)
 
 
