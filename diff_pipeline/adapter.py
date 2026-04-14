@@ -227,6 +227,11 @@ class _DiffusersUnetModel:
         self.model_lowvram = False
         self.current_weight_patches_uuid = None
 
+        # Set by DiffusersModelAdapter after DiffPipeline construction.
+        # When set, apply_model() delegates to DiffPipeline.apply_model() so
+        # ControlNet mapping, ForgeAttnProcessor dispatch, and offload logic work.
+        self._diff_pipeline = None
+
         # model_sampling — auto-detected from the diffusers UNet/scheduler config.
         # Provides timestep(sigma), calculate_input, calculate_denoised
         # which apply_model uses for correct sigma preconditioning.
@@ -335,6 +340,19 @@ class _DiffusersUnetModel:
 
         This mirrors DiffPipeline.apply_model() in pipeline.py exactly.
         """
+        # Delegate to DiffPipeline when available — it handles ControlNet
+        # mapping, ForgeAttnProcessor dispatch, LoRA sync, and offload modes.
+        if self._diff_pipeline is not None:
+            return self._diff_pipeline.apply_model(
+                x, t,
+                c_crossattn=c_crossattn,
+                c_concat=c_concat,
+                control=kwargs.get("control"),
+                transformer_options=kwargs.get("transformer_options", {}),
+                **{k: v for k, v in kwargs.items()
+                   if k not in ("control", "transformer_options")},
+            )
+
         sigma = t
 
         # --- sigma preconditioning (step 1 & 2) ----------------------------
@@ -772,7 +790,23 @@ class DiffusersModelAdapter:
 
         # ---- misc -------------------------------------------------------
         self.cond_stage_model_empty_prompt = None
-        self.diff_pipeline = pipe          # back-reference expected by some code
+
+        # Build a DiffPipeline wrapping the already-loaded HF UNet so that
+        # _DiffusersUnetModel.apply_model() delegates to DiffPipeline.apply_model().
+        # This activates ControlNet mapping, ForgeAttnProcessor dispatch,
+        # LoRA sync, and offload logic for the diffusers hijack path.
+        try:
+            from diff_pipeline.pipeline import DiffPipeline
+            _dp = DiffPipeline.from_hf_unet(pipe.unet, _unet_patcher, self)
+            _unet_patcher.model._diff_pipeline = _dp
+            self.diff_pipeline = _dp
+        except Exception as _dp_err:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "DiffusersModelAdapter: failed to build DiffPipeline (%s) — "
+                "falling back to direct UNet forward", _dp_err
+            )
+            self.diff_pipeline = pipe
 
     # ---- dtype property -------------------------------------------------
 

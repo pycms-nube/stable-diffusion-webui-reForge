@@ -129,6 +129,42 @@ _UP_ATTN_LDM_IDX: dict = {
 
 
 # ---------------------------------------------------------------------------
+# PassthroughAttnProcessor
+# ---------------------------------------------------------------------------
+
+class PassthroughAttnProcessor:
+    """Wraps AttnProcessor2_0 for self-attention (attn1) blocks.
+
+    Diffusers warns when cross_attention_kwargs keys don't match the processor
+    signature.  By declaring ``transformer_options`` explicitly we silence the
+    warning; the value is forwarded to the inner processor (which ignores it).
+    """
+
+    def __init__(self):
+        from diffusers.models.attention_processor import AttnProcessor2_0
+        self._inner = AttnProcessor2_0()
+
+    def __call__(
+        self,
+        attn,
+        hidden_states,
+        encoder_hidden_states=None,
+        attention_mask=None,
+        temb=None,
+        transformer_options=None,  # noqa: ARG002 — declared for diffusers sig check
+        **kwargs,
+    ):
+        return self._inner(
+            attn,
+            hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=attention_mask,
+            temb=temb,
+            **kwargs,
+        )
+
+
+# ---------------------------------------------------------------------------
 # ForgeAttnProcessor
 # ---------------------------------------------------------------------------
 
@@ -160,9 +196,11 @@ class ForgeAttnProcessor:
         encoder_hidden_states=None,
         attention_mask=None,
         temb=None,
-        **cross_attention_kwargs,
+        transformer_options=None,
+        **_cross_attention_kwargs,
     ):
-        transformer_options = cross_attention_kwargs.get("transformer_options", {})
+        if transformer_options is None:
+            transformer_options = {}
         transformer_patches = transformer_options.get("patches", {})
         transformer_patches_replace = transformer_options.get("patches_replace", {})
 
@@ -383,6 +421,58 @@ class DiffPipeline():
         model_sampling: Sigma ↔ timestep conversion (reused from ldm).
     """
 
+    # ------------------------------------------------------------------
+    # Alternative constructor: wrap an already-built HF UNet
+    # (used by the diffusers hijack path in DiffusersModelAdapter)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_hf_unet(cls, hf_unet, unet_patcher, sd_model) -> "DiffPipeline":
+        """Create a DiffPipeline from an already-loaded HF UNet2DConditionModel.
+
+        Unlike the normal constructor this skips the ldm→HF weight conversion
+        (``_build_hf_unet``).  Used when a StableDiffusionXLPipeline has been
+        loaded by the diffusers path-hijack and we want DiffPipeline.apply_model
+        to be the active forward path so ControlNet mapping, ForgeAttnProcessor
+        dispatch, LoRA sync, and offload logic all work correctly.
+        """
+        instance = cls.__new__(cls)
+        instance.unet_patcher = unet_patcher
+        instance.sd_model = sd_model
+        instance.model_sampling = unet_patcher.model.model_sampling
+
+        from modules.shared_cmd_options import cmd_opts
+        instance._auto_offload = getattr(cmd_opts, 'forge_diffusers_auto_offload', False)
+        instance._sequential_offload = (
+            getattr(cmd_opts, 'forge_diffusers_sequential_offload', False)
+            and not instance._auto_offload
+        )
+        instance._offload = (
+            getattr(cmd_opts, 'forge_diffusers_offload', False)
+            and not instance._sequential_offload
+            and not instance._auto_offload
+        )
+        instance._seq_hooks_installed = False
+        instance._compiled = False
+        instance._mps_optimized = False
+        instance._auto_offload_ready = False
+        instance._b_hooks = []
+        instance._b_block_paths = []
+
+        instance._hf_unet = hf_unet
+        instance._install_attn_processors(hf_unet)
+
+        # No ldm key map available on this path — LoRA sync via PEFT is skipped.
+        instance._ldm_to_hf = {}
+        instance._synced_patches_uuid = None
+        instance._active_adapters = []
+
+        log.info(
+            "DiffPipeline.from_hf_unet: attached to existing HF UNet — "
+            "diffusers hijack path is ACTIVE."
+        )
+        return instance
+
     def __init__(self, unet_patcher: UnetPatcher, sd_model: object) -> None:
         self.unet_patcher = unet_patcher
         self.sd_model = sd_model
@@ -402,6 +492,7 @@ class DiffPipeline():
         )
         self._seq_hooks_installed: bool = False
         self._compiled: bool = False
+        self._mps_optimized: bool = False
 
         # Auto-offload state — populated lazily on first apply_model() call.
         self._auto_offload_ready: bool = False
@@ -514,23 +605,31 @@ class DiffPipeline():
         return result
 
     def _install_attn_processors(self, hf_unet) -> None:
-        """Install ForgeAttnProcessor on every attn2 in the HF UNet."""
+        """Install ForgeAttnProcessor on every attn2 and PassthroughAttnProcessor
+        on every attn1 in the HF UNet.
+
+        Both processors declare ``transformer_options`` explicitly in their
+        signatures so diffusers does not emit "not expected … will be ignored"
+        warnings when cross_attention_kwargs is forwarded from apply_model().
+        """
+        def _install_block_processors(attn_mod, block_name, ldm_idx):
+            for t_idx, tb in enumerate(attn_mod.transformer_blocks):
+                tb.attn2.set_processor(
+                    ForgeAttnProcessor(block_name, ldm_idx, t_idx)
+                )
+                tb.attn1.set_processor(PassthroughAttnProcessor())
+
         # Down blocks
         for b_idx, down_block in enumerate(hf_unet.down_blocks):
             for a_idx, attn_mod in enumerate(getattr(down_block, "attentions", [])):
                 ldm_idx = _DOWN_ATTN_LDM_IDX.get((b_idx, a_idx))
                 if ldm_idx is None:
                     continue
-                for t_idx, tb in enumerate(attn_mod.transformer_blocks):
-                    tb.attn2.set_processor(
-                        ForgeAttnProcessor("input", ldm_idx, t_idx)
-                    )
+                _install_block_processors(attn_mod, "input", ldm_idx)
 
         # Mid block
-        for t_idx, tb in enumerate(
-            hf_unet.mid_block.attentions[0].transformer_blocks
-        ):
-            tb.attn2.set_processor(ForgeAttnProcessor("middle", 0, t_idx))
+        for attn_mod in getattr(hf_unet.mid_block, "attentions", []):
+            _install_block_processors(attn_mod, "middle", 0)
 
         # Up blocks
         for b_idx, up_block in enumerate(hf_unet.up_blocks):
@@ -538,10 +637,7 @@ class DiffPipeline():
                 ldm_idx = _UP_ATTN_LDM_IDX.get((b_idx, a_idx))
                 if ldm_idx is None:
                     continue
-                for t_idx, tb in enumerate(attn_mod.transformer_blocks):
-                    tb.attn2.set_processor(
-                        ForgeAttnProcessor("output", ldm_idx, t_idx)
-                    )
+                _install_block_processors(attn_mod, "output", ldm_idx)
 
     def _install_sequential_offload_hooks(self, device) -> None:
         """Install accelerate per-block CPU offload hooks on the HF UNet.
@@ -890,9 +986,14 @@ class DiffPipeline():
             # Whole-model placement: move to compute device if needed.
             if next(self._hf_unet.parameters()).device != device:
                 self._hf_unet.to(device=device)
-            
-            
-            
+
+            # MPS-specific optimizations — applied once after the UNet lands on device.
+            if device.type == "mps" and not self._mps_optimized:
+                if hasattr(self._hf_unet, "enable_attention_slicing"):
+                    self._hf_unet.enable_attention_slicing()
+                    log.info("DiffPipeline: MPS — enabled attention slicing")
+                self._mps_optimized = True
+
 
         # Dtype from HF UNet (works regardless of current parameter device).
         dtype = next(self._hf_unet.parameters()).dtype
@@ -951,7 +1052,13 @@ class DiffPipeline():
 
         # --- 5. LoRA sync (Phase 5) ---
         self._sync_lora()
-        
+
+        # --- 5b. Diffusers optimization injection ---
+        # Override apply_diffusers_optimization() or monkey-patch it to inject
+        # custom Diffusers optimizations (xformers, flash-attn, torch.compile, etc.).
+        # Called after device placement and LoRA sync, before the forward pass.
+        self.apply_diffusers_optimization(self._hf_unet)
+
         # --- 6. HF UNet forward ---
         # Compile once on first call; skip on MPS (inductor Metal codegen does not
         # support dynamic threadgroup sizes, causing a SyntaxError at runtime).
@@ -979,6 +1086,49 @@ class DiffPipeline():
             self._hf_unet = self._hf_unet.to(device="cpu")
 
         return result
+
+    # ------------------------------------------------------------------
+    # Diffusers optimization injection point
+    # ------------------------------------------------------------------
+
+    def get_pipeline(self) -> "UNet2DConditionModel":
+        """Return the underlying HF ``UNet2DConditionModel``.
+
+        Use this to apply Diffusers-level optimizations before inference,
+        for example::
+
+            pipeline = diff_pipeline.get_pipeline()
+            pipeline.enable_xformers_memory_efficient_attention()
+            # or: pipeline.enable_flash_attn_2(), torch.compile(pipeline), etc.
+            
+        To future developer: DON'T DELETE THIS! 
+        UNTIL I FIND A WAY PROPERLY LABEL WHAT THE HECK THE HF NET TYPE IS
+        """
+        return self._hf_unet
+
+    def apply_diffusers_optimization(self, _hf_unet: "UNet2DConditionModel") -> None:
+        """Stub — override or monkey-patch this to inject custom Diffusers optimizations.
+
+        Called once per ``apply_model()`` invocation, after the UNet has been
+        moved to the correct compute device and LoRA adapters have been synced,
+        but before the HF UNet forward pass.  The ``hf_unet`` argument is the
+        same object as ``self.get_pipeline()``.
+
+        Example usage (monkey-patch from outside)::
+
+            from diff_pipeline.pipeline import DiffPipeline
+
+            def my_opt(self, unet):
+                unet.enable_xformers_memory_efficient_attention()
+
+            DiffPipeline.apply_diffusers_optimization = my_opt
+
+        Or subclass ``DiffPipeline`` and override this method directly.
+        """
+        #EXPERIEMENT: TaylorSeer Cache
+        
+        
+        pass  # no-op by default
 
     # ------------------------------------------------------------------
     # Introspection helpers

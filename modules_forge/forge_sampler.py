@@ -137,6 +137,12 @@ def _ensure_diffusers_wrapper(unet):
     _dp = getattr(sd_model, "diff_pipeline", None)
     if _dp is None:
         return
+    # Guard: only register the wrapper for a real DiffPipeline instance.
+    # DiffusersModelAdapter sets diff_pipeline to the raw diffusers pipe when
+    # DiffPipeline construction fails; calling .apply_model() on it would crash.
+    from diff_pipeline.pipeline import DiffPipeline
+    if not isinstance(_dp, DiffPipeline):
+        return
 
     def _diff_apply_model_wrapper(executor, x, t, c_concat=None, c_crossattn=None,
                                    control=None, transformer_options={}, **kwargs):
