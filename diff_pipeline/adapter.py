@@ -522,6 +522,10 @@ class _FakeModelConfig:
             return x
 
     latent_format = _FakeLatentFormat()
+    # lora.model_lora_keys_unet() calls model.model_config.unet_config to build
+    # diffusers-format key mappings.  An empty dict means no diffusers-style keys
+    # are added, but the standard lora_unet_* keys built earlier still work.
+    unet_config = {}
 
 
 def _build_unet_patcher(diffusers_unet, device: torch.device, scheduler=None) -> Any:
@@ -590,31 +594,99 @@ def _pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def _encode_prompts(pipe, prompts: list[str]):
-    """Encode a list of text prompts using the pipeline's text encoders.
+def _encode_prompts_single(pipe, tokenizer, text_encoder, prompts: list[str], device, is_last: bool):
+    """Encode *prompts* through one (tokenizer, text_encoder) pair using multi-chunk
+    encoding so prompts longer than 77 tokens are never silently truncated.
 
-    For SDXL this calls `encode_prompt` which returns
-    (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds,
-     negative_pooled_prompt_embeds).
+    Returns:
+        hidden  – (B, n_chunks * max_length, hidden_dim)  hidden states (penultimate layer)
+        pooled  – (B, pooled_dim) or None; only meaningful when is_last=True (CLIP-G for SDXL)
+    """
+    max_length = tokenizer.model_max_length   # 77
+    chunk_size  = max_length - 2              # 75 content tokens per chunk
+
+    bos = tokenizer.bos_token_id
+    eos = tokenizer.eos_token_id
+    pad = tokenizer.pad_token_id
+
+    # Tokenize without truncation to get the full id sequence for each prompt.
+    raw = tokenizer(prompts, add_special_tokens=False, truncation=False, padding=False)
+
+    batch_hidden = []
+    batch_pooled = []
+
+    for ids in raw.input_ids:
+        # Split into chunks of chunk_size content tokens.
+        chunks = [ids[i : i + chunk_size] for i in range(0, max(len(ids), 1), chunk_size)]
+        if not chunks:
+            chunks = [[]]
+
+        chunk_hiddens = []
+        last_pooled   = None
+        for chunk in chunks:
+            # Pad each chunk to exactly max_length: [BOS] + chunk + [EOS] + padding
+            padded = [bos] + list(chunk) + [eos] + [pad] * (chunk_size - len(chunk))
+            ids_t  = torch.tensor([padded], device=device)
+            with torch.no_grad():
+                out = text_encoder(ids_t, output_hidden_states=True)
+            chunk_hiddens.append(out.hidden_states[-2])   # (1, max_length, hidden)
+            last_pooled = out[0]                          # (1, pooled_dim)
+
+        # Concatenate all chunks along the sequence dimension.
+        batch_hidden.append(torch.cat(chunk_hiddens, dim=1))   # (1, n*max_length, hidden)
+        if is_last:
+            batch_pooled.append(last_pooled)
+
+    # Pad to the same sequence length across the batch before stacking.
+    max_seq = max(h.shape[1] for h in batch_hidden)
+    padded_hidden = []
+    for h in batch_hidden:
+        if h.shape[1] < max_seq:
+            pad_t = torch.zeros(1, max_seq - h.shape[1], h.shape[2], device=device, dtype=h.dtype)
+            h = torch.cat([h, pad_t], dim=1)
+        padded_hidden.append(h)
+
+    hidden = torch.cat(padded_hidden, dim=0)                   # (B, n*max_length, hidden)
+    pooled = torch.cat(batch_pooled, dim=0) if batch_pooled else None
+    return hidden, pooled
+
+
+def _encode_prompts(pipe, prompts: list[str]):
+    """Encode a list of text prompts using multi-chunk encoding.
+
+    Each prompt is split into 75-token windows so arbitrarily long prompts are
+    supported without truncation — matching the behaviour of the forge/A1111 CLIP
+    path in ldm_patched/modules/sd1_clip.py.
 
     Returns a dict compatible with the webui SDXL conditioning format:
-      {'crossattn': tensor(B, seq, hidden), 'vector': tensor(B, pooled)}
+      {'crossattn': tensor(B, n_chunks*77, hidden), 'vector': tensor(B, pooled)}
 
-    prompt_parser indexes this as a dict (conds[i] = {k: v[i] ...}), then
-    reconstruct_*_batch stacks per-prompt dicts back into a batched DictWithShape,
-    which cond_from_a1111_to_patched_ldm converts to model_conds with
-    c_crossattn and y keys.  apply_model then uses y as text_embeds.
+    For SD1.5/SD2 models (no tokenizer_2) only 'crossattn' is returned.
     """
     device = next(pipe.unet.parameters()).device
-    result = pipe.encode_prompt(
-        prompt=prompts,
-        device=device,
-        num_images_per_prompt=1,
-        do_classifier_free_guidance=False,
-    )
-    prompt_embeds = result[0]          # (B, seq_len, hidden)
-    # SDXL returns a 4-tuple; SD1.5 / SD2 return a 2-tuple
-    pooled_embeds = result[2] if len(result) >= 4 else None
+
+    tokenizers    = []
+    text_encoders = []
+    for tok_attr, te_attr in (("tokenizer", "text_encoder"), ("tokenizer_2", "text_encoder_2")):
+        tok = getattr(pipe, tok_attr, None)
+        te  = getattr(pipe, te_attr,  None)
+        if tok is not None and te is not None:
+            tokenizers.append(tok)
+            text_encoders.append(te)
+
+    all_hidden = []
+    pooled_embeds = None
+
+    for i, (tok, te) in enumerate(zip(tokenizers, text_encoders)):
+        is_last = (i == len(tokenizers) - 1)
+        hidden, pooled = _encode_prompts_single(pipe, tok, te, prompts, device, is_last)
+        all_hidden.append(hidden)
+        if pooled is not None:
+            pooled_embeds = pooled
+
+    # SDXL: concatenate CLIP-L and CLIP-G hidden states along the feature dimension.
+    # SD1.5: only one encoder, nothing to concatenate.
+    prompt_embeds = torch.cat(all_hidden, dim=-1) if len(all_hidden) > 1 else all_hidden[0]
 
     if pooled_embeds is not None:
         return {"crossattn": prompt_embeds, "vector": pooled_embeds}

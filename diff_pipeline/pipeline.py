@@ -711,9 +711,11 @@ class DiffPipeline():
                 if hf_key is None:
                     continue
 
-                lora_up   = adapter.weights[0]  # lora_up.weight   → PEFT lora_B  [out, r]
-                lora_down = adapter.weights[1]  # lora_down.weight → PEFT lora_A  [r, in]
-                alpha = adapter.weights[2]      # scalar or None
+                lora_up    = adapter.weights[0]  # lora_up.weight   → PEFT lora_B  [out, r]
+                lora_down  = adapter.weights[1]  # lora_down.weight → PEFT lora_A  [r, in]
+                alpha      = adapter.weights[2]  # scalar or None
+                # weights[3] = mid (tucker), weights[4] = dora_scale, weights[5] = reshape
+                dora_scale = adapter.weights[4]  # [1, out_dim] or None (DoRA magnitude)
                 r = lora_down.shape[0]
                 alpha_val = float(alpha) if alpha is not None else float(r)
 
@@ -721,6 +723,13 @@ class DiffPipeline():
                 state_dict[f"{module_path}.lora_A.weight"] = lora_down
                 state_dict[f"{module_path}.lora_B.weight"] = lora_up
                 network_alphas[module_path] = alpha_val
+
+                # DoRA: add magnitude vector so PEFT detects use_dora=True and applies
+                # weight decomposition.  Kohya/A1111 stores it as [1, out_dim]; squeeze
+                # to [out_dim] which is the shape PEFT's lora_magnitude_vector expects.
+                if dora_scale is not None:
+                    mag = dora_scale.squeeze(0) if dora_scale.dim() > 1 and dora_scale.shape[0] == 1 else dora_scale
+                    state_dict[f"{module_path}.lora_magnitude_vector"] = mag
 
                 if adapter_strength is None:
                     adapter_strength = float(strength_patch)
