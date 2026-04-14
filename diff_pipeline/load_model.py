@@ -320,7 +320,26 @@ def dummy_sdxl_hijack(checkpoint_info) -> Any:
         torch_dtype=dtype,
         use_safetensors=checkpoint_info.is_safetensors,
     )
-    pipe.to(device)
+
+    from modules.shared_cmd_options import cmd_opts
+    _auto_offload = getattr(cmd_opts, 'forge_diffusers_auto_offload', False)
+    _seq_offload  = getattr(cmd_opts, 'forge_diffusers_sequential_offload', False)
+
+    if _auto_offload:
+        # Move everything except UNet to device; auto-offload handles UNet block streaming.
+        for attr in ("text_encoder", "text_encoder_2", "vae", "image_encoder"):
+            sub = getattr(pipe, attr, None)
+            if sub is not None:
+                sub.to(device)
+        from diff_pipeline.pipeline import apply_auto_offload_to_unet
+        apply_auto_offload_to_unet(pipe.unet, device)
+    elif _seq_offload:
+        from accelerate import cpu_offload
+        pipe.to(device)
+        for child in pipe.unet.children():
+            cpu_offload(child, execution_device=device, offload_buffers=True)
+    else:
+        pipe.to(device)
 
     return DiffusersModelAdapter(pipe, checkpoint_info, model_type="sdxl")
 

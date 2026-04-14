@@ -47,7 +47,7 @@ Known limitations
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -274,6 +274,90 @@ class ForgeAttnProcessor:
 
         hidden_states = hidden_states / attn.rescale_output_factor
         return hidden_states
+
+
+# ---------------------------------------------------------------------------
+# Standalone auto-offload helper (used by both DiffPipeline and the hijack path)
+# ---------------------------------------------------------------------------
+
+def apply_auto_offload_to_unet(hf_unet, device: "torch.device"):
+    """Partition an HF UNet2DConditionModel into Group A (device) and Group B (CPU)
+    using infer_auto_device_map, then install forward pre/post hooks on Group B so
+    each block is streamed to the compute device only while it runs.
+
+    Returns a list of (pre_handle, post_handle) pairs so the caller can remove them.
+    """
+    from accelerate import infer_auto_device_map
+
+    device_key = str(device)
+    max_memory: Optional[Dict[Union[int, str], Union[int, str]]]
+    if device.type == "cuda":
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        max_memory = {device_key: int(free_bytes * 0.85), "cpu": "48GiB"}
+    elif device.type == "mps":
+        max_memory = {device_key: "8GiB", "cpu": "48GiB"}
+    else:
+        max_memory = None
+
+    device_map = infer_auto_device_map(
+        hf_unet,
+        max_memory=max_memory,
+        no_split_module_classes=["Transformer2DModel", "ResnetBlock2D"],
+    )
+    log.info("apply_auto_offload_to_unet: raw device_map=%s", device_map)
+
+    # Collect block-level children (expand ModuleLists like down_blocks/up_blocks)
+    def iter_blocks(unet):
+        for name, child in unet.named_children():
+            if isinstance(child, torch.nn.ModuleList):
+                for idx in range(len(child)):
+                    yield f"{name}.{idx}", child[idx]
+            else:
+                yield name, child
+
+    group_a = []
+    group_b = []
+    for path, module in iter_blocks(hf_unet):
+        is_cpu = any(
+            str(dev) == "cpu"
+            for key, dev in device_map.items()
+            if key == path or key.startswith(path + ".")
+        )
+        (group_b if is_cpu else group_a).append((path, module))
+
+    log.info("apply_auto_offload_to_unet: Group A (device)=%s", [p for p, _ in group_a])
+    log.info("apply_auto_offload_to_unet: Group B (CPU offload)=%s", [p for p, _ in group_b])
+
+    # Move Group A to device; Group B stays on CPU
+    for _, module in group_a:
+        module.to(device=device)
+
+    # Install load/unload hooks on Group B
+    hook_handles = []
+    unet_module_map = {n: m for n, m in hf_unet.named_modules() if n}
+
+    for path, _ in group_b:
+        current = unet_module_map.get(path)
+        if current is None:
+            log.warning("apply_auto_offload_to_unet: could not resolve path '%s' — skipping hooks", path)
+            continue
+
+        def make_hooks(dev):
+            def pre_hook(m, inp):
+                m.to(device=dev)
+            def post_hook(m, inp, out):
+                m.to(device="cpu")
+            return pre_hook, post_hook
+
+        pre_fn, post_fn = make_hooks(device)
+        hook_handles.append(current.register_forward_pre_hook(pre_fn))
+        hook_handles.append(current.register_forward_hook(post_fn))
+
+    log.info(
+        "apply_auto_offload_to_unet: done — %d Group-A blocks, %d Group-B blocks, %d hooks installed",
+        len(group_a), len(group_b), len(hook_handles),
+    )
+    return hook_handles
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +599,7 @@ class DiffPipeline():
         device is known.  Must be re-called (via ``_reset_auto_offload``) after
         any structural change to the UNet (e.g. LoRA adapter swap).
         """
+        print(f"[_setup_auto_offload] ENTERED — device={device}")
         from accelerate import infer_auto_device_map
 
         # --- 1. Determine max_memory budget ---
@@ -530,6 +615,7 @@ class DiffPipeline():
             max_memory = {device_key: "8GiB", "cpu": "48GiB"}
         else:
             max_memory = None
+        print(f"[_setup_auto_offload] max_memory={max_memory}")
 
         # --- 2. Infer device map ---
         # no_split_module_classes prevents splitting a Transformer or ResnetBlock
@@ -789,14 +875,18 @@ class DiffPipeline():
 
         # --- 2. Device placement / offload setup ---
         device = x.device
-        if self._sequential_offload:
+        if self._auto_offload:
+            # Partition UNet into Group A (device) / Group B (CPU) with hooks.
+            # Done lazily on the first call; re-runs after LoRA swaps.
+            if not self._auto_offload_ready:
+                self._setup_auto_offload(device)
+        elif self._sequential_offload:
             # Install per-block accelerate hooks on the first call.
             # After that the hooks handle GPU↔CPU movement automatically;
             # the UNet itself stays on CPU between blocks.
             if not self._seq_hooks_installed:
                 self._install_sequential_offload_hooks(device)
         else:
-            
             # Whole-model placement: move to compute device if needed.
             if next(self._hf_unet.parameters()).device != device:
                 self._hf_unet.to(device=device)
