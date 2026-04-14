@@ -216,7 +216,7 @@ class _DiffusersUnetModel:
     diffusers UNet2DConditionModel.
     """
 
-    def __init__(self, diffusers_unet, device: torch.device):
+    def __init__(self, diffusers_unet, device: torch.device, scheduler=None):
         self.diffusion_model = diffusers_unet   # accessed by forge extensions
         self.device = device
 
@@ -227,9 +227,10 @@ class _DiffusersUnetModel:
         self.model_lowvram = False
         self.current_weight_patches_uuid = None
 
-        # model_sampling / model_config stubs — accessed by processing.py ZT-SNR
-        # and forge_loader latent_channels logic.  Provide safe no-ops.
-        self.model_sampling = _FakeModelSampling(diffusers_unet)
+        # model_sampling — auto-detected from the diffusers UNet/scheduler config.
+        # Provides timestep(sigma), calculate_input, calculate_denoised
+        # which apply_model uses for correct sigma preconditioning.
+        self.model_sampling = _build_model_sampling_from_pipe(diffusers_unet, scheduler=scheduler)
         self.model_config = _FakeModelConfig()
         self.latent_channels = 4
 
@@ -259,7 +260,7 @@ class _DiffusersUnetModel:
           width / height / crop_w / crop_h / target_width / target_height
         """
         import ldm_patched.modules.conds as _conds
-        out = {}
+        out: dict = {}
 
         cross_attn = kwargs.get("cross_attn", None)
         if cross_attn is not None:
@@ -325,15 +326,21 @@ class _DiffusersUnetModel:
     def apply_model(self, x, t, c_crossattn=None, c_concat=None, **kwargs):
         """Forward pass called by samplers.py _calc_cond_batch.
 
-        samplers.py unpacks the cond dict and passes it as keyword args.
-        For SDXL the model_conds contain:
-          c_crossattn — encoder hidden states (text embeddings)
-          y           — pooled text embedding (CLIP-G) from cond_from_a1111_to_patched_ldm
+        ``t`` arrives as a sigma tensor from the k-diffusion sampler.  The
+        diffusers UNet expects integer timesteps (0–999), so we must:
+          1. Scale the noisy input:   xc = calculate_input(sigma, x)
+          2. Convert sigma → timestep: ts = model_sampling.timestep(sigma)
+          3. Run the UNet:             eps = unet(xc, ts, ...)
+          4. Recover denoised x:       x0 = calculate_denoised(sigma, eps, x)
 
-        The diffusers UNet2DConditionModel (SDXL) needs these as:
-          encoder_hidden_states=c_crossattn
-          added_cond_kwargs={"text_embeds": y, "time_ids": time_ids}
+        This mirrors DiffPipeline.apply_model() in pipeline.py exactly.
         """
+        sigma = t
+
+        # --- sigma preconditioning (step 1 & 2) ----------------------------
+        xc = self.model_sampling.calculate_input(sigma, x)
+        timestep = self.model_sampling.timestep(sigma).float()
+
         # c_crossattn may arrive as a list of tensors — concatenate them
         if isinstance(c_crossattn, (list, tuple)):
             c_crossattn = torch.cat(c_crossattn, dim=1)
@@ -360,9 +367,9 @@ class _DiffusersUnetModel:
             ).repeat(batch, 1)
             added_cond_kwargs["time_ids"] = time_ids
 
-        # MPS (Apple Silicon) requires all inputs to share the same dtype.
+        # Ensure all inputs share the same dtype as the UNet weights
         model_dtype = self.get_dtype()
-        x = x.to(dtype=model_dtype)
+        xc = xc.to(dtype=model_dtype)
         if c_crossattn is not None:
             c_crossattn = c_crossattn.to(dtype=model_dtype)
         added_cond_kwargs = {
@@ -370,12 +377,16 @@ class _DiffusersUnetModel:
             for k, v in added_cond_kwargs.items()
         }
 
-        return self.diffusion_model(
-            x,
-            t,
+        # --- UNet forward (step 3) -----------------------------------------
+        model_output = self.diffusion_model(
+            xc,
+            timestep,
             encoder_hidden_states=c_crossattn,
             added_cond_kwargs=added_cond_kwargs if added_cond_kwargs else None,
         ).sample
+
+        # --- recover denoised prediction (step 4) --------------------------
+        return self.model_sampling.calculate_denoised(sigma, model_output, x)
 
     # ---- Latent pass-through (called on inner_model by KSampler) -----------
 
@@ -400,16 +411,102 @@ class _DiffusersUnetModel:
         return self.apply_model(x, t, c_crossattn=c_crossattn, **kwargs)
 
 
-class _FakeModelSampling:
-    """Stub for unet.model.model_sampling used by processing.py ZT-SNR rescaling."""
+def _build_model_sampling_from_pipe(diffusers_unet, scheduler=None):
+    """Detect prediction type and beta schedule from a diffusers pipeline and
+    return the matching ``ModelSamplingDiscrete`` subclass instance.
 
-    def __init__(self, unet):
-        # Build a simple linear sigma schedule so attribute reads don't crash.
-        steps = 1000
-        self.sigmas = torch.linspace(1.0, 0.0, steps + 1)
+    This mirrors the logic in ``forge_loader.py`` / ``model_base.model_sampling()``
+    which selects between ``EPS``, ``V_PREDICTION``, etc. based on the checkpoint's
+    ``parameterization`` key — but reads equivalent information from diffusers
+    config objects instead of ldm state-dict metadata.
 
-    def set_sigmas(self, sigmas):
-        self.sigmas = sigmas
+    Prediction-type mapping
+    -----------------------
+    diffusers ``prediction_type``  →  ldm_patched prediction class
+    ``"epsilon"``                  →  ``EPS``           (most SDXL / SD1.5 models)
+    ``"v_prediction"``             →  ``V_PREDICTION``  (SD2.1, some SDXL variants)
+    ``"sample"``                   →  ``X0``            (direct x₀ prediction, rare)
+
+    The ``prediction_type`` is read from ``diffusers_unet.config`` first (most
+    reliable for single-file checkpoints), then from ``scheduler.config`` as a
+    fallback.
+
+    Beta-schedule mapping
+    ---------------------
+    diffusers ``beta_schedule``    →  ldm_patched schedule name
+    ``"scaled_linear"``            →  ``"linear"``  (both do linspace(√β₀,√β₁)²)
+    ``"squaredcos_cap_v2"``        →  ``"cosine"``
+    ``"linear"``                   →  ``"linear"``  (close enough for inference)
+
+    ``beta_start``, ``beta_end``, ``num_train_timesteps``, and
+    ``rescale_betas_zero_snr`` are also transplanted when present.
+    """
+    from ldm_patched.modules.model_sampling import ModelSamplingDiscrete, EPS, V_PREDICTION, X0
+
+    # --- 1. Prediction type -------------------------------------------------
+    prediction_type = "epsilon"   # safe default (most checkpoints)
+
+    # UNet config is more reliable for from_single_file() loaded checkpoints
+    unet_cfg = getattr(diffusers_unet, "config", None)
+    if unet_cfg is not None:
+        prediction_type = getattr(unet_cfg, "prediction_type", prediction_type)
+
+    # Scheduler config as a secondary source (may override if more specific)
+    if scheduler is not None:
+        sched_cfg = getattr(scheduler, "config", None)
+        if sched_cfg is not None:
+            prediction_type = getattr(sched_cfg, "prediction_type", prediction_type)
+
+    _PRED_MAP = {
+        "epsilon":      EPS,
+        "v_prediction": V_PREDICTION,
+        "sample":       X0,
+    }
+    pred_class = _PRED_MAP.get(prediction_type, EPS)
+
+    # --- 2. Beta schedule ---------------------------------------------------
+    # Defaults match SDXL / SD1.5 (diffusers "scaled_linear" = ldm "linear")
+    beta_schedule = "linear"
+    linear_start  = 0.00085
+    linear_end    = 0.012
+    timesteps     = 1000
+    zsnr          = False
+
+    if scheduler is not None:
+        sched_cfg = getattr(scheduler, "config", None)
+        if sched_cfg is not None:
+            _SCHED_MAP = {
+                "scaled_linear":      "linear",   # SDXL default
+                "squaredcos_cap_v2":  "cosine",   # SD2 cosine variant
+                # diffusers "linear" ≈ ldm "linear" for inference purposes
+            }
+            diff_sched = getattr(sched_cfg, "beta_schedule", "scaled_linear")
+            beta_schedule = _SCHED_MAP.get(diff_sched, "linear")
+            linear_start  = getattr(sched_cfg, "beta_start",            linear_start)
+            linear_end    = getattr(sched_cfg, "beta_end",              linear_end)
+            timesteps     = getattr(sched_cfg, "num_train_timesteps",   timesteps)
+            zsnr          = getattr(sched_cfg, "rescale_betas_zero_snr", zsnr)
+
+    # --- 3. Build sampling class --------------------------------------------
+    class _SamplingCfg:
+        sampling_settings = {
+            "beta_schedule": beta_schedule,
+            "linear_start":  linear_start,
+            "linear_end":    linear_end,
+            "timesteps":     timesteps,
+            "zsnr":          zsnr,
+        }
+
+    # type() avoids the mypy "Invalid base class variable" error while still
+    # producing correct MRO (ModelSamplingDiscrete → pred_class).
+    _DynSampling = type("_DynSampling", (ModelSamplingDiscrete, pred_class), {})
+    instance = _DynSampling(model_config=_SamplingCfg())
+    print(
+        f"[DiffusersModelAdapter] model_sampling: prediction={prediction_type} "
+        f"schedule={beta_schedule} linear_start={linear_start} "
+        f"linear_end={linear_end} timesteps={timesteps} zsnr={zsnr}"
+    )
+    return instance
 
 
 class _FakeModelConfig:
@@ -427,7 +524,7 @@ class _FakeModelConfig:
     latent_format = _FakeLatentFormat()
 
 
-def _build_unet_patcher(diffusers_unet, device: torch.device) -> "UnetPatcher":
+def _build_unet_patcher(diffusers_unet, device: torch.device, scheduler=None) -> Any:
     """Wrap a diffusers UNet2DConditionModel in a real UnetPatcher.
 
     This gives extensions the full patcher API (clone(), model_options,
@@ -439,7 +536,7 @@ def _build_unet_patcher(diffusers_unet, device: torch.device) -> "UnetPatcher":
     load_device   = device
     offload_device = torch.device("cpu")
 
-    model_wrapper = _DiffusersUnetModel(diffusers_unet, device)
+    model_wrapper = _DiffusersUnetModel(diffusers_unet, device, scheduler=scheduler)
     patcher = UnetPatcher(
         model=model_wrapper,
         load_device=load_device,
@@ -573,7 +670,8 @@ class DiffusersModelAdapter:
         # Build a real UnetPatcher so extensions get the full patcher API
         # (clone(), model_options, wrappers, memory management).
         _device = _pick_device()
-        _unet_patcher = _build_unet_patcher(pipe.unet, _device)
+        _scheduler = getattr(pipe, "scheduler", None)
+        _unet_patcher = _build_unet_patcher(pipe.unet, _device, scheduler=_scheduler)
         _fo = _ForgeObjects(_unet_patcher, getattr(pipe, "vae", None))
         self.forge_objects                     = _fo
         self.forge_objects_original            = _fo.shallow_copy()
@@ -596,7 +694,9 @@ class DiffusersModelAdapter:
         except Exception:
             self.alphas_cumprod = torch.linspace(1.0, 0.0, 1000)
         self.alphas_cumprod_original = self.alphas_cumprod
-        self.sigmas_original = None
+        # Initialise from the real model_sampling so set_sigmas(sigmas_original)
+        # in processing.py never receives None.
+        self.sigmas_original = _unet_patcher.model.model_sampling.sigmas
 
         # ---- misc -------------------------------------------------------
         self.cond_stage_model_empty_prompt = None

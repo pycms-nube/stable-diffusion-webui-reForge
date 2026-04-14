@@ -20,6 +20,15 @@ from modules_forge.unet_patcher import UnetPatcher
 from diff_pipeline import DiffPipeline
 from diff_pipeline import load_model as diffusers_hijack
 from ldm_patched.modules.model_base import model_sampling, ModelType, SD3
+
+# Auto-register the built-in SDXL path hijack when --forge-diffusers-pipeline is active.
+# This causes sd_models.load_model() to load SDXL checkpoints directly via
+# StableDiffusionXLPipeline.from_single_file() instead of going through ldm.
+if getattr(cmd_opts, 'forge_diffusers_pipeline', False):
+    diffusers_hijack.register_path_hijack(
+        diffusers_hijack.is_sdxl_checkpoint,
+        diffusers_hijack.dummy_sdxl_hijack,
+    )
 from ldm_patched.modules.patcher_extension import WrappersMP
 import logging
 import types

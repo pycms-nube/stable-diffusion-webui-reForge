@@ -748,6 +748,8 @@ def run_pip(command, desc: Any | None = None, live=default_command_live) -> None
         return
 
     index_url_line: str = f' --index-url {index_url}' if index_url != '' else ''
+    if _use_uv():
+        return run(f'"{uv}" pip {command} --python "{python}"{index_url_line}', desc=f"Installing {desc}", errdesc=f"Couldn't install {desc}", live=live)
     return run(f'"{python}" -m pip {command} --prefer-binary{index_url_line}', desc=f"Installing {desc}", errdesc=f"Couldn't install {desc}", live=live)
 
 
