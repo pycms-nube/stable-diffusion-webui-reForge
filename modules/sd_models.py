@@ -1124,6 +1124,23 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None, forced_relo
     current_loaded_models = len(model_data.loaded_sd_models)
     print(f"Loading model {checkpoint_info.title} ({current_loaded_models + 1} of {shared.opts.sd_checkpoints_limit})")
 
+    # Path-based diffusers hijack — fires before state dict is read from disk.
+    # If a registered hijack claims the checkpoint it returns the model directly,
+    # skipping ldm loading entirely.
+    from diff_pipeline import load_model as _diffusers_load
+    _hijacked = _diffusers_load.maybe_apply_path_hijack(checkpoint_info)
+    if _hijacked is not None:
+        _hijacked.filename = checkpoint_info.filename
+        _hijacked.sd_checkpoint_info = checkpoint_info
+        _hijacked.sd_model_checkpoint = checkpoint_info.filename
+        model_data.loaded_sd_models.insert(0, _hijacked)
+        model_data.set_sd_model(_hijacked)
+        model_data.was_loaded_at_least_once = True
+        script_callbacks.model_loaded_callback(_hijacked)
+        timer.record("diffusers path hijack")
+        print(f"Model {checkpoint_info.title} loaded via diffusers in {timer.summary()}.")
+        return _hijacked
+
     # State dict handling with explicit scoping
     sd_model = None
     try:

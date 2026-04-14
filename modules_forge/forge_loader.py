@@ -18,6 +18,7 @@ from ldm.util import instantiate_from_config
 from modules_forge import forge_clip
 from modules_forge.unet_patcher import UnetPatcher
 from diff_pipeline import DiffPipeline
+from diff_pipeline import load_model as diffusers_hijack
 from ldm_patched.modules.model_base import model_sampling, ModelType, SD3
 from ldm_patched.modules.patcher_extension import WrappersMP
 import logging
@@ -538,15 +539,7 @@ def load_model_for_a1111(timer, checkpoint_info=None, state_dict=None):
     if sd_model.is_sdxl:
         extend_sdxl(sd_model)
 
-    sd_model.diff_pipeline = None
-    if sd_model.is_sdxl and getattr(cmd_opts, 'forge_diffusers_pipeline', False):
-        sd_model.diff_pipeline = DiffPipeline(forge_objects.unet, sd_model)
-        _dp = sd_model.diff_pipeline
-
-        def _diff_apply_model_wrapper(executor, x, t, c_concat=None, c_crossattn=None, control=None, transformer_options={}, **kwargs):
-            return _dp.apply_model(x, t, c_concat=c_concat, c_crossattn=c_crossattn, control=control, transformer_options=transformer_options, **kwargs)
-
-        forge_objects.unet.add_wrapper_with_key(WrappersMP.APPLY_MODEL, "forge_diffusers", _diff_apply_model_wrapper)
+    diffusers_hijack.maybe_apply_diffusers_hijack(sd_model, forge_objects)
 
     sd_model.sd_model_hash = sd_model_hash
     sd_model.sd_model_checkpoint = checkpoint_info.filename
