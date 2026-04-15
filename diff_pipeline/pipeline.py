@@ -1005,6 +1005,49 @@ class DiffPipeline():
             return
         self._tc_ready = True
 
+        # --- MPS path: enable fp16 autocast to minimise memory and reduce swap ---
+        # torch.autocast on MPS keeps intermediate activations in float16 instead of
+        # silently widening to float32, halving the active-memory footprint and
+        # reducing the chance that macOS swaps UNet tensors to the unified memory
+        # pool's slow region.  We guard with is_autocast_available() so this is
+        # skipped on PyTorch builds that do not yet expose MPS autocast (pre-2.3).
+        if device.type == "mps":
+            mps_autocast_ok = False
+            try:
+                mps_autocast_ok = torch.amp.autocast_mode.is_autocast_available("mps")
+            except Exception:
+                pass  # older PyTorch — attribute not present
+
+            if mps_autocast_ok:
+                # Always prefer float16 on MPS regardless of the stored UNet dtype.
+                # A float32 UNet still benefits: autocast casts eligible ops to fp16
+                # so peak live memory is cut roughly in half, reducing swap pressure.
+                self._autocast_dtype = torch.float16
+
+                # Log the recommended memory ceiling so the user can see the budget.
+                try:
+                    rec_mem_bytes = torch.mps.recommended_max_memory()
+                    rec_mem_gib = rec_mem_bytes / (1024 ** 3)
+                    mem_note = f"  (torch.mps.recommended_max_memory = {rec_mem_gib:.1f} GiB)"
+                except Exception:
+                    mem_note = ""
+
+                msg = (
+                    f"MPS autocast enabled — UNet forward wrapped in "
+                    f"torch.autocast(device_type='mps', dtype=float16) "
+                    f"to keep activations in fp16 and minimise swap{mem_note}"
+                )
+                print(f"\n[DiffPipeline] {msg}\n")
+                log.info("DiffPipeline: %s", msg)
+            else:
+                self._autocast_dtype = None
+                log.info(
+                    "DiffPipeline: MPS autocast not available on this PyTorch build "
+                    "(torch.amp.autocast_mode.is_autocast_available('mps') = False) "
+                    "— running without autocast."
+                )
+            return
+
         if device.type != "cuda" or not torch.cuda.is_available():
             self._autocast_dtype = None
             return
@@ -1221,9 +1264,15 @@ class DiffPipeline():
                     f"    The UI will be unresponsive for ~1-3 min during graph capture.\n"
                     f"    This only happens once per session.\n"
                 )
-                self._hf_unet = torch.compile(
+                if device == "mps":
+                    # MPS don't have max auto tune, inductor use as default
+                    self._hf_unet = torch.compile(
                     self._hf_unet, mode="reduce-overhead", fullgraph=False
                 )
+                else:
+                    self._hf_unet = torch.compile(
+                        self._hf_unet, mode="reduce-overhead", fullgraph=False
+                    )
                 self._compiled = True
                 log.warning("DiffPipeline: torch.compile finished — graph cached, normal speed resumes.")
                 print("\n[DiffPipeline] *** torch.compile done — generation will proceed normally. ***\n")
