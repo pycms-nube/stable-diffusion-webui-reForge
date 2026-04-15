@@ -59,6 +59,27 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Lazy-loaded optimisation helpers (mirrors modules_forge/stream.py and
+# ldm_patched/modules/model_management.py).  Imported once at first use so
+# that the module can be imported without a running webui environment.
+# ---------------------------------------------------------------------------
+def _get_stream_module():
+    """Return modules_forge.stream, or None if unavailable."""
+    try:
+        import modules_forge.stream as _s
+        return _s
+    except Exception:
+        return None
+
+def _get_pin_shared_memory() -> bool:
+    """Return True when --pin-shared-memory was requested."""
+    try:
+        from ldm_patched.modules.model_management import PIN_SHARED_MEMORY
+        return bool(PIN_SHARED_MEMORY)
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Hardcoded SDXL UNet2DConditionModel config
@@ -458,6 +479,8 @@ class DiffPipeline():
         instance._auto_offload_ready = False
         instance._b_hooks = []
         instance._b_block_paths = []
+        instance._tc_ready = False
+        instance._autocast_dtype = None
 
         instance._hf_unet = hf_unet
         instance._install_attn_processors(hf_unet)
@@ -498,6 +521,10 @@ class DiffPipeline():
         self._auto_offload_ready: bool = False
         self._b_hooks: list = []        # registered hook handles (removed on LoRA change)
         self._b_block_paths: list = []  # Group B block paths (for logging)
+
+        # Tensor Core optimisation state — populated lazily on first apply_model() call.
+        self._tc_ready: bool = False
+        self._autocast_dtype: Optional[torch.dtype] = None  # set by _maybe_setup_tensor_core_opts
 
         self._hf_unet: UNet2DConditionModel
         log.info("DiffPipeline: building HF UNet2DConditionModel from checkpoint weights …")
@@ -950,6 +977,86 @@ class DiffPipeline():
     # Public interface (mirrors BaseModel.apply_model signature)
     # ------------------------------------------------------------------
 
+    def _maybe_setup_tensor_core_opts(self, device: "torch.device", unet_dtype: "torch.dtype") -> None:
+        """Detect GPU Tensor Core capability and apply compatible optimisations once.
+
+        Called lazily on the first ``apply_model()`` after device placement so
+        the compute device is known.
+
+        Actions taken (each guarded so it's only applied when appropriate):
+
+        * **Ampere+ (sm_80+) with fp32 UNet** — enables TF32 for matmul and
+          cuDNN convolutions.  TF32 uses Tensor Cores internally while keeping
+          fp32 inputs/outputs, so existing precision is preserved at higher
+          throughput.
+
+        * **Volta+ (sm_70+) with fp16/bf16 UNet** — stores the half-precision
+          dtype so ``apply_model()`` wraps the UNet forward in
+          ``torch.autocast``.  The UNet weights are already in the target dtype;
+          the autocast context ensures *all* intermediate ops (time-step
+          embedding, norms, etc.) also stay in half-precision and hit the TC
+          path instead of silently widening to fp32.
+
+        SDXL channel sizes (320 / 640 / 1280) are all divisible by 8, and the
+        attention head-dim is 64 — both satisfy the minimum alignment required
+        for fp16/bf16 Tensor Core GEMMs, so no padding is needed.
+        """
+        if self._tc_ready:
+            return
+        self._tc_ready = True
+
+        if device.type != "cuda" or not torch.cuda.is_available():
+            self._autocast_dtype = None
+            return
+
+        major, minor = torch.cuda.get_device_capability(device)
+        gpu_name = torch.cuda.get_device_name(device)
+        msgs: list[str] = []
+
+        # --- Ampere+ (sm_80+): TF32 for fp32 UNet ---
+        if major >= 8 and unet_dtype == torch.float32:
+            if not torch.backends.cuda.matmul.allow_tf32:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                msgs.append("matmul TF32 enabled  (torch.backends.cuda.matmul.allow_tf32 = True)")
+            if not torch.backends.cudnn.allow_tf32:
+                torch.backends.cudnn.allow_tf32 = True
+                msgs.append("cuDNN conv TF32 enabled  (torch.backends.cudnn.allow_tf32 = True)")
+
+        # --- Volta+ (sm_70+): autocast for fp16 / bf16 UNet ---
+        if major >= 7 and unet_dtype in (torch.float16, torch.bfloat16):
+            self._autocast_dtype = unet_dtype
+            msgs.append(
+                f"UNet forward wrapped in torch.autocast({unet_dtype})  "
+                f"— keeps time-embed / norm ops in half-precision for consistent TC usage"
+            )
+        else:
+            self._autocast_dtype = None
+
+        # --- Alignment note ---
+        if major >= 7:
+            msgs.append(
+                "SDXL channel dims 320/640/1280 are ÷8 and head-dim=64 is ÷8  "
+                "— fp16/bf16 TC alignment satisfied ✓"
+            )
+
+        if msgs:
+            lines = "\n".join(f"  • {m}" for m in msgs)
+            print(
+                f"\n[DiffPipeline] Tensor Core optimisations applied"
+                f" ({gpu_name}, sm_{major}{minor}, unet_dtype={unet_dtype}):\n"
+                f"{lines}\n"
+            )
+            log.info(
+                "DiffPipeline: TC opts (%s sm_%d%d dtype=%s): %s",
+                gpu_name, major, minor, unet_dtype, "; ".join(msgs),
+            )
+        else:
+            log.info(
+                "DiffPipeline: No TC optimisations applied"
+                " (device=%s, sm_%d%d, unet_dtype=%s — no matching rule)",
+                gpu_name, major, minor, unet_dtype,
+            )
+
     def apply_model(
         self,
         x,
@@ -1006,8 +1113,11 @@ class DiffPipeline():
                 self._mps_optimized = True
 
 
-        # Dtype from HF UNet (works regardless of current parameter device).
+        # --- 2b. Tensor Core setup (runs once per session) ---
         dtype = next(self._hf_unet.parameters()).dtype
+        self._maybe_setup_tensor_core_opts(device, dtype)
+
+        # Dtype from HF UNet (works regardless of current parameter device).
         xc = xc.to(dtype)
         if c_crossattn is not None:
             c_crossattn = c_crossattn.to(dtype)
@@ -1126,16 +1236,48 @@ class DiffPipeline():
             tuple(added_cond_kwargs["time_ids"].shape)    if added_cond_kwargs and "time_ids"    in added_cond_kwargs else "absent",
         )
 
-        unet_output = self._hf_unet(
-            sample=xc,
-            timestep=timestep,
-            encoder_hidden_states=encoder_hidden_states,
-            added_cond_kwargs=added_cond_kwargs,
-            down_block_additional_residuals=down_block_residuals,
-            mid_block_additional_residual=mid_block_residual,
-            cross_attention_kwargs={"transformer_options": transformer_options},
-            return_dict=False,
+        # --- 6b. cuda-stream: run HF UNet forward on the dedicated compute stream ---
+        # Mirrors the modules_forge/stream.py approach used by the ldm path.
+        # When --cuda-stream is active, modules_forge.stream.current_stream holds
+        # a pre-warmed torch.cuda.Stream.  Wrapping the forward pass in that
+        # stream context lets the CUDA scheduler overlap this compute with any
+        # async memory transfers happening on the mover_stream.
+        _stream_mod = _get_stream_module()
+        _use_stream = (
+            _stream_mod is not None
+            and getattr(_stream_mod, "using_stream", False)
+            and getattr(_stream_mod, "current_stream", None) is not None
         )
+
+        def _unet_forward():
+            return self._hf_unet(
+                sample=xc,
+                timestep=timestep,
+                encoder_hidden_states=encoder_hidden_states,
+                added_cond_kwargs=added_cond_kwargs,
+                down_block_additional_residuals=down_block_residuals,
+                mid_block_additional_residual=mid_block_residual,
+                cross_attention_kwargs={"transformer_options": transformer_options},
+                return_dict=False,
+            )
+
+        # Wrap forward in autocast when _maybe_setup_tensor_core_opts decided it
+        # would help (fp16/bf16 UNet on Volta+).  This keeps time-embed and norm
+        # ops in half-precision so they hit the TC path rather than widening to fp32.
+        def _run_forward():
+            if self._autocast_dtype is not None:
+                with torch.autocast(device_type=device.type, dtype=self._autocast_dtype):
+                    return _unet_forward()
+            return _unet_forward()
+
+        if _use_stream:
+            with torch.cuda.stream(_stream_mod.current_stream):
+                unet_output = _run_forward()
+            # Synchronise so downstream ops on the default stream see the result.
+            _stream_mod.current_stream.synchronize()
+        else:
+            unet_output = _run_forward()
+
         model_output = unet_output[0].float()
 
         # Debug: check for NaN in UNet output.
@@ -1168,7 +1310,19 @@ class DiffPipeline():
 
         # --- 8. Offload HF UNet back to CPU if requested ---
         if self._offload:
-            self._hf_unet = self._hf_unet.to(device="cpu")
+            # Use non_blocking when cuda-stream is active so the CPU←GPU copy
+            # is enqueued asynchronously and doesn't stall the compute stream.
+            self._hf_unet = self._hf_unet.to(device="cpu", non_blocking=_use_stream)
+
+            # --pin-shared-memory: pin the offloaded weights to page-locked
+            # (pinned) CPU memory so the next GPU upload uses DMA and avoids
+            # a kernel-to-user copy.  Mirrors model_patcher.py's usage of
+            # PIN_SHARED_MEMORY.  We only pin once — if the parameters are
+            # already pinned this is a no-op.
+            if _get_pin_shared_memory():
+                for p in self._hf_unet.parameters():
+                    if not p.data.is_pinned():
+                        p.data = p.data.pin_memory()
 
         return result
 

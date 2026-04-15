@@ -64,7 +64,10 @@ device_codeformer: torch.device = model_management.get_torch_device()  # will be
 device_rcan: torch.device = model_management.get_torch_device()  # will be managed by memory management system
 device_plksr: torch.device = model_management.get_torch_device()  # will be managed by memory management system
 dtype: torch.dtype = model_management.unet_dtype()
-dtype_vae: torch.dtype = model_management.vae_dtype()
+dtype_vae: torch.dtype = model_management.vae_dtype(
+    model_management.get_torch_device(),
+    [torch.bfloat16, torch.float32],  # BF16 safe on Ampere+/non-AMD; AMD excluded inside vae_dtype
+)
 dtype_unet: torch.dtype = model_management.unet_dtype()
 dtype_inference: torch.dtype = model_management.unet_dtype()
 unet_needs_upcast = False

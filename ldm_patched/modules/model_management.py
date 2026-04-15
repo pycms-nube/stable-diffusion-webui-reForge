@@ -319,9 +319,38 @@ except:
 
 
 if ENABLE_PYTORCH_ATTENTION:
+    _sdp_enabled = []
+
+    # Math SDP: always available as universal fallback
     torch.backends.cuda.enable_math_sdp(True)
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    _sdp_enabled.append("Math")
+
+    # Flash Attention: fast, low-memory; requires sm80+ (Ampere) on CUDA or supported ROCm arch
+    try:
+        if torch.backends.cuda.is_flash_attention_available():
+            torch.backends.cuda.enable_flash_sdp(True)
+            _sdp_enabled.append("Flash")
+        else:
+            torch.backends.cuda.enable_flash_sdp(False)
+    except Exception:
+        torch.backends.cuda.enable_flash_sdp(True)   # older PyTorch: no probe API, enable optimistically
+        _sdp_enabled.append("Flash (unverified)")
+
+    # Memory-Efficient Attention: xformers-style kernel; wider hw support than Flash
+    try:
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        _sdp_enabled.append("MemEfficient")
+    except Exception:
+        pass
+
+    # cuDNN Attention: available since PyTorch 2.3 on Hopper (H100) and select Ampere configs
+    try:
+        torch.backends.cuda.enable_cudnn_sdp(True)
+        _sdp_enabled.append("cuDNN")
+    except AttributeError:
+        pass  # PyTorch < 2.3 — cuDNN SDP not present
+
+    print("SDP attention backends enabled: {}".format(", ".join(_sdp_enabled)))
 
 
 PRIORITIZE_FP16 = False  # TODO: remove and replace with something that shows exactly which dtype is faster than the other
