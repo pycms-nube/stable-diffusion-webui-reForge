@@ -48,8 +48,49 @@ forge_loader.py after normal ldm loading, unchanged from before.
 
 from __future__ import annotations
 
+import logging
 import torch
 from typing import Callable, Optional, Any
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Hardware-aware dtype selection — bf16 > fp32 > fp16
+# ---------------------------------------------------------------------------
+
+def preferred_unet_dtype(device: "torch.device | None" = None) -> torch.dtype:
+    """Return the best compute dtype for the UNet on *device*.
+
+    Priority: bf16 > fp32 > fp16
+
+    bf16 shares the same exponent range as fp32 so it avoids the NaN /
+    overflow issues that plague fp16 in deep diffusion stacks.  fp32 is the
+    safe fallback for hardware without native bf16 (e.g. Turing, RDNA2).
+    fp16 is used only on devices that explicitly support it but lack bf16
+    (e.g. MPS, Intel XPU with no bf16 fast-path, Volta on Windows).
+
+    The decision is delegated to ``model_management`` so that device-specific
+    quirks (MPS, AMD RDNA2, Nvidia 16-series blacklist, XPU …) are handled
+    in one place and stay in sync with the rest of the forge backend.
+    """
+    from ldm_patched.modules.model_management import should_use_bf16, should_use_fp16
+
+    if should_use_bf16(device):
+        dtype = torch.bfloat16
+    elif should_use_fp16(device):
+        dtype = torch.float16
+    else:
+        dtype = torch.float32
+
+    log.info(
+        "DiffPipeline dtype selected: %s on %s  "
+        "(bf16=native Ampere+/RDNA3 — no overflow risk; "
+        "fp16=Turing/Volta/MPS — narrower exponent range, watch for NaN; "
+        "fp32=safe fallback — higher VRAM use)",
+        dtype, device,
+    )
+    return dtype
 
 
 # ---------------------------------------------------------------------------
@@ -423,9 +464,29 @@ def _legacy_sdxl_fallback(sd_model, forge_objects) -> None:
 
     from diff_pipeline.pipeline import DiffPipeline
     from ldm_patched.modules.patcher_extension import WrappersMP
+    from ldm_patched.modules.model_management import get_torch_device
 
     sd_model.diff_pipeline = DiffPipeline(forge_objects.unet, sd_model)
     _dp = sd_model.diff_pipeline
+
+    # Cast HF UNet to the hardware-preferred dtype (bf16 > fp32 > fp16) at
+    # load time so no runtime upcast is needed during inference.
+    _infer_device = get_torch_device()
+    _preferred = preferred_unet_dtype(_infer_device)
+    _current = next(_dp._hf_unet.parameters()).dtype
+    if _current != _preferred:
+        _dp._hf_unet = _dp._hf_unet.to(dtype=_preferred)
+        log.info(
+            "DiffPipeline (legacy path): HF UNet recast %s → %s on %s "
+            "(ldm loaded in a different dtype than the diffusers-preferred one — "
+            "image output may differ from prior runs)",
+            _current, _preferred, _infer_device,
+        )
+    else:
+        log.info(
+            "DiffPipeline (legacy path): HF UNet dtype %s on %s — no recast needed",
+            _current, _infer_device,
+        )
 
     def _diff_apply_model_wrapper(
         executor, x, t,

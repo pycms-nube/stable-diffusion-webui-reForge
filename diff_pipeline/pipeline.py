@@ -755,10 +755,21 @@ class DiffPipeline():
         # --- 5. Regional compile (skip MPS — Metal inductor issues) ---
         # Compile BEFORE installing hooks so hooks attach to the OptimizedModule.
         if device.type != "mps":
+            n_blocks = len(group_a) + len(group_b)
+            log.info(
+                "DiffPipeline: torch.compile starting — %d UNet blocks "
+                "(mode=reduce-overhead). This may take 1–3 minutes on first run …",
+                n_blocks,
+            )
             for path, setter, module in group_a + group_b:
+                log.info("DiffPipeline: compiling block '%s' …", path)
                 compiled = torch.compile(module, mode="reduce-overhead", fullgraph=False)
                 setter(compiled)
-                log.debug("DiffPipeline auto-offload: compiled block '%s'", path)
+            log.info(
+                "DiffPipeline: torch.compile done — %d blocks compiled. "
+                "Subsequent runs will reuse the cached graph.",
+                n_blocks,
+            )
 
         # --- 6. Install load/unload hooks on Group B ---
         # Re-fetch modules after possible compile replacement.
@@ -1070,11 +1081,42 @@ class DiffPipeline():
         # Called after device placement and LoRA sync, before the forward pass.
         self.apply_diffusers_optimization(self._hf_unet)
 
-        # --- 6. HF UNet forward ---
-        # torch.compile() is disabled: it can silently produce NaN in fp16 for
-        # some checkpoint weight distributions (observed with NoobAI XL).
-        # Re-enable only after confirming numerical stability per checkpoint.
-        self._compiled = True  # skip compile path
+        # --- 6. Whole-model torch.compile (single-device path only) ---
+        # Compile is safe when the UNet runs in bf16 or fp32 — both have the
+        # same fp32 exponent range so inductor kernel fusion cannot overflow.
+        # fp16 is excluded: its narrow exponent range (~65504 max) causes
+        # silent NaN when inductor fuses ops, as observed with NoobAI XL.
+        # (The VAE NaN fix in load_model.py applies the same reasoning to the
+        # VAE decoder.)  On offload paths the UNet blocks are spread across
+        # devices so whole-model compile does not apply there.
+        if not self._compiled and not self._auto_offload and not self._sequential_offload:
+            unet_dtype = next(self._hf_unet.parameters()).dtype
+            if unet_dtype == torch.float16:
+                log.info(
+                    "DiffPipeline: torch.compile skipped — UNet is in fp16 "
+                    "(narrow exponent range risks NaN under inductor fusion). "
+                    "Switch to bf16/fp32 hardware to enable compile.",
+                )
+                self._compiled = True  # mark so we don't re-check every step
+            else:
+                log.warning(
+                    "DiffPipeline: torch.compile is about to begin (UNet dtype=%s). "
+                    "The UI will appear frozen for 1–3 minutes while the inductor "
+                    "captures and optimises the compute graph — this is normal. "
+                    "Subsequent runs will reuse the cached graph and start instantly.",
+                    unet_dtype,
+                )
+                print(
+                    f"\n[DiffPipeline] *** torch.compile starting (dtype={unet_dtype}) ***\n"
+                    f"    The UI will be unresponsive for ~1-3 min during graph capture.\n"
+                    f"    This only happens once per session.\n"
+                )
+                self._hf_unet = torch.compile(
+                    self._hf_unet, mode="reduce-overhead", fullgraph=False
+                )
+                self._compiled = True
+                log.warning("DiffPipeline: torch.compile finished — graph cached, normal speed resumes.")
+                print("\n[DiffPipeline] *** torch.compile done — generation will proceed normally. ***\n")
 
         # Debug: log added_cond_kwargs shapes before the forward pass.
         log.debug(

@@ -593,14 +593,11 @@ class _ForgeObjects:
 def _pick_dtype(device: torch.device) -> torch.dtype:
     """Return the best inference dtype for *device*.
 
-    float16 is not supported on plain CPU in PyTorch (gives a UserWarning and
-    silently degrades).  Use float32 on CPU, float16 on CUDA/MPS.
+    Delegates to ``preferred_unet_dtype`` (bf16 > fp32 > fp16) so the
+    decision stays in sync with the rest of the forge backend.
     """
-    if device.type == "cuda":
-        return torch.float16
-    if device.type == "mps":
-        return torch.float16   # MPS supports float16
-    return torch.float32       # CPU: must use float32
+    from diff_pipeline.load_model import preferred_unet_dtype
+    return preferred_unet_dtype(device)
 
 
 def _pick_device() -> torch.device:
