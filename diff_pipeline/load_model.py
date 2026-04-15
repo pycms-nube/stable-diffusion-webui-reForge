@@ -341,6 +341,26 @@ def dummy_sdxl_hijack(checkpoint_info) -> Any:
     else:
         pipe.to(device)
 
+    # --- VAE decode precision upcast ----------------------------------------
+    # The SDXL VAE decoder produces NaN in fp16 when intermediate activations
+    # overflow the fp16 max (~65504).  We fix this once at load time so that
+    # decode_first_stage() never needs to mutate model state at runtime — which
+    # would break torch.compile / inductor CUDA-graph capture.
+    #
+    # Dtype selection (Tensor Core priority):
+    #   bf16  — same exponent range as fp32, no overflow risk, natively
+    #            accelerated by Tensor Cores on Ampere+ (preferred).
+    #   fp32  — full range, uses tf32 on Ampere+ (also hits Tensor Cores).
+    #            Fallback for devices without bf16 support or on CPU.
+    if dtype in (torch.float16,):  # only upcast if we loaded in a reduced dtype
+        if device.type == "cuda" and torch.cuda.is_bf16_supported():
+            vae_decode_dtype = torch.bfloat16
+        else:
+            vae_decode_dtype = torch.float32
+        pipe.vae.to(dtype=vae_decode_dtype)
+        print(f"[diffusers path hijack] VAE upcasted to {vae_decode_dtype} "
+              f"to avoid fp16 overflow during decode.")
+
     return DiffusersModelAdapter(pipe, checkpoint_info, model_type="sdxl")
 
 

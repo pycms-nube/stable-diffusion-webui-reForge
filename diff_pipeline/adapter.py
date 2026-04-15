@@ -835,15 +835,100 @@ class DiffusersModelAdapter:
             latents = encoder_output.latent_dist.sample()
         else:
             latents = encoder_output
-        # Standard scaling factor used by SD/SDXL
-        return latents * getattr(self._pipe.vae.config, "scaling_factor", 0.18215)
+        return self._vae_scale(latents)
+
+    def _vae_scale(self, latents: torch.Tensor) -> torch.Tensor:
+        """Scale latents after VAE encode (mirrors latent_formats.py process_in).
+
+        Handles all known VAE latent format variants:
+          Basic SDXL / SD 1.x:   latents * scaling_factor
+          With shift_factor:      (latents - shift_factor) * scaling_factor
+          With latents_mean/std:  (latents - mean) * scaling_factor / std
+        """
+        cfg = self._pipe.vae.config
+        scaling_factor = getattr(cfg, "scaling_factor",  None)
+        shift_factor   = getattr(cfg, "shift_factor",    None)
+        latents_mean   = getattr(cfg, "latents_mean",    None)
+        latents_std    = getattr(cfg, "latents_std",     None)
+
+        if scaling_factor is None:
+            raise ValueError(
+                "DiffusersModelAdapter: vae.config.scaling_factor is missing. "
+                "Cannot scale latents. Check the loaded checkpoint."
+            )
+
+        if latents_mean is not None and latents_std is not None:
+            mean = torch.tensor(latents_mean, device=latents.device, dtype=latents.dtype).view(1, -1, 1, 1)
+            std  = torch.tensor(latents_std,  device=latents.device, dtype=latents.dtype).view(1, -1, 1, 1)
+            return (latents - mean) * scaling_factor / std
+
+        if shift_factor is not None:
+            return (latents - shift_factor) * scaling_factor
+
+        return latents * scaling_factor
+
+    def _vae_unscale(self, z: torch.Tensor) -> torch.Tensor:
+        """Unscale latents before VAE decode (mirrors latent_formats.py process_out).
+
+        Handles all known VAE latent format variants:
+          Basic SDXL / SD 1.x:   z / scaling_factor
+          With shift_factor:      z / scaling_factor + shift_factor
+          With latents_mean/std:  z * std / scaling_factor + mean
+
+        The scaling_factor, shift_factor, latents_mean and latents_std are read
+        from vae.config so every checkpoint carries its own correct formula.
+        """
+        import logging as _log
+        _logger = _log.getLogger(__name__)
+
+        cfg = self._pipe.vae.config
+        scaling_factor = getattr(cfg, "scaling_factor",  None)
+        shift_factor   = getattr(cfg, "shift_factor",    None)
+        latents_mean   = getattr(cfg, "latents_mean",    None)
+        latents_std    = getattr(cfg, "latents_std",     None)
+
+        if scaling_factor is None:
+            raise ValueError(
+                "DiffusersModelAdapter: vae.config.scaling_factor is missing. "
+                "Cannot unscale latents. Check the loaded checkpoint."
+            )
+
+        import torch as _torch
+        nan_in = int(_torch.isnan(z).sum())
+        print(
+            f"[VAE unscale] scaling_factor={scaling_factor:.5f}  "
+            f"shift_factor={f'{shift_factor:.5f}' if shift_factor is not None else 'None'}  "
+            f"has_mean_std={latents_mean is not None}  "
+            f"z.shape={tuple(z.shape)}  z.dtype={z.dtype}  "
+            f"nan_in_z={nan_in}  z_min={float(z[~_torch.isnan(z)].min()) if nan_in < z.numel() else 'all-nan'}  "
+            f"z_max={float(z[~_torch.isnan(z)].max()) if nan_in < z.numel() else 'all-nan'}"
+        )
+
+        if latents_mean is not None and latents_std is not None:
+            # Per-channel normalisation (Playground 2.5 / CogVideoX style)
+            mean = torch.tensor(latents_mean, device=z.device, dtype=z.dtype).view(1, -1, 1, 1)
+            std  = torch.tensor(latents_std,  device=z.device, dtype=z.dtype).view(1, -1, 1, 1)
+            return z * std / scaling_factor + mean
+
+        if shift_factor is not None:
+            # Shifted latent format (SD3 / FLUX style)
+            return z / scaling_factor + shift_factor
+
+        # Standard (SDXL / SD 1.x)
+        return z / scaling_factor
 
     def decode_first_stage(self, z: torch.Tensor) -> torch.Tensor:
-        """Decode latents to images using the diffusers VAE."""
+        """Decode latents to images using the diffusers VAE.
+
+        The VAE dtype is fixed at load time (see dummy_sdxl_hijack in load_model.py)
+        to bf16 or fp32 to avoid fp16 overflow.  No runtime dtype switching is done
+        here so this method is torch.compile / inductor CUDA-graph safe.
+        """
         vae = self._pipe.vae
-        scaling = getattr(vae.config, "scaling_factor", 0.18215)
-        z = z / scaling
-        z = z.to(device=next(vae.parameters()).device, dtype=vae.dtype)
+        z = self._vae_unscale(z)
+        device = next(vae.parameters()).device
+        # Cast latents to match the VAE's dtype (bf16 or fp32 after load-time upcast).
+        z = z.to(device=device, dtype=vae.dtype)
         decoded = vae.decode(z)
         return getattr(decoded, "sample", decoded)
 

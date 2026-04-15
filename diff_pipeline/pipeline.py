@@ -1030,7 +1030,18 @@ class DiffPipeline():
                     "(time conditioning may be imprecise)"
                 )
             else:
-                added_cond_kwargs = None
+                # Neither raw ADM tensors nor legacy y — build a zero fallback so
+                # the SDXL UNet never receives added_cond_kwargs=None, which causes
+                # the add_embedding module to produce NaN.
+                log.warning(
+                    "[DiffPipeline] No pooled conditioning found (adm_text_embeds/y both absent)"
+                    " — using zero fallback for added_cond_kwargs."
+                )
+                batch = x.shape[0]
+                added_cond_kwargs = {
+                    "text_embeds": torch.zeros(batch, 1280, device=device, dtype=dtype),
+                    "time_ids":    torch.zeros(batch,    6, device=device, dtype=dtype),
+                }
 
         # --- 4. ControlNet residual mapping ---
         # ldm: control["input"] is a list that gets pop()d (reverse order).
@@ -1060,11 +1071,18 @@ class DiffPipeline():
         self.apply_diffusers_optimization(self._hf_unet)
 
         # --- 6. HF UNet forward ---
-        # Compile once on first call; skip on MPS (inductor Metal codegen does not
-        # support dynamic threadgroup sizes, causing a SyntaxError at runtime).
-        if not self._compiled and device.type != "mps":
-            self._hf_unet.compile()
-            self._compiled = True
+        # torch.compile() is disabled: it can silently produce NaN in fp16 for
+        # some checkpoint weight distributions (observed with NoobAI XL).
+        # Re-enable only after confirming numerical stability per checkpoint.
+        self._compiled = True  # skip compile path
+
+        # Debug: log added_cond_kwargs shapes before the forward pass.
+        log.debug(
+            "[DiffPipeline] added_cond_kwargs keys=%s text_embeds.shape=%s time_ids.shape=%s",
+            list(added_cond_kwargs.keys()) if added_cond_kwargs is not None else "None",
+            tuple(added_cond_kwargs["text_embeds"].shape) if added_cond_kwargs and "text_embeds" in added_cond_kwargs else "absent",
+            tuple(added_cond_kwargs["time_ids"].shape)    if added_cond_kwargs and "time_ids"    in added_cond_kwargs else "absent",
+        )
 
         unet_output = self._hf_unet(
             sample=xc,
@@ -1078,8 +1096,33 @@ class DiffPipeline():
         )
         model_output = unet_output[0].float()
 
+        # Debug: check for NaN in UNet output.
+        if torch.isnan(model_output).any():
+            nan_count = torch.isnan(model_output).sum().item()
+            valid = model_output[~torch.isnan(model_output)]
+            log.warning(
+                "[DiffPipeline] NaN in UNet output! nan_count=%d  valid_min=%.3f  valid_max=%.3f",
+                nan_count,
+                valid.min().item() if valid.numel() > 0 else float("nan"),
+                valid.max().item() if valid.numel() > 0 else float("nan"),
+            )
+        else:
+            log.debug(
+                "[DiffPipeline] UNet output OK: min=%.3f  max=%.3f",
+                model_output.min().item(), model_output.max().item(),
+            )
+
         # --- 7. Sigma postconditioning (identical to ldm _apply_model) ---
         result = self.model_sampling.calculate_denoised(sigma, model_output, x)
+
+        # Debug: check for NaN after calculate_denoised.
+        nan_result = torch.isnan(result).sum().item()
+        if nan_result > 0:
+            print(
+                f"[DiffPipeline] NaN after calculate_denoised! nan={nan_result}  "
+                f"sigma={sigma.item() if sigma.numel()==1 else float(sigma.max())}  "
+                f"x_nan={torch.isnan(x).sum().item()}"
+            )
 
         # --- 8. Offload HF UNet back to CPU if requested ---
         if self._offload:
