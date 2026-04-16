@@ -52,6 +52,8 @@ import logging
 import torch
 from typing import Callable, Optional, Any
 
+from diff_pipeline._cache import lru_cached
+
 log = logging.getLogger(__name__)
 
 
@@ -195,6 +197,7 @@ def maybe_apply_path_hijack(checkpoint_info) -> Optional[Any]:
 # Safetensors header key reader (no weights loaded)
 # ---------------------------------------------------------------------------
 
+@lru_cached
 def _read_safetensors_tensor_keys(filename: str) -> Optional[set]:
     """Read only tensor key names from a safetensors header — zero weight loading.
 

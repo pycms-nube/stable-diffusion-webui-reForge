@@ -359,6 +359,14 @@ schedulers = [
     Scheduler('align_your_steps_GITS', 'Align Your Steps GITS', get_align_your_steps_sigmas_GITS),
     Scheduler('align_your_steps_11', 'Align Your Steps 11', ays_11_sigmas),
     Scheduler('align_your_steps_32', 'Align Your Steps 32', ays_32_sigmas),
+    # Diffusers-native schedulers — full sigma generation requires the
+    # Diffusers pipeline (--forge-diffusers-pipeline).  Without it they fall
+    # back to model-default sigmas (same as Automatic).
+    Scheduler('dpm++_2m', 'DPM++ 2M (Diffusers)', None),
+    Scheduler('dpm++_2m_karras', 'DPM++ 2M Karras (Diffusers)', None),
+    Scheduler('dpm++_singlestep', 'DPM++ Singlestep (Diffusers)', None),
+    Scheduler('unipc', 'UniPC (Diffusers)', None),
+    Scheduler('lms', 'LMS (Diffusers)', None),
 ]
 
 schedulers_map = {**{x.name: x for x in schedulers}, **{x.label: x for x in schedulers}}

@@ -5,6 +5,7 @@ import numpy as np
 from modules.sd_sampling_backend import get_sampling
 from modules.models.diffusion.uni_pc import uni_pc
 from modules.torch_utils import float64
+from modules import shared
 
 
 @torch.no_grad()

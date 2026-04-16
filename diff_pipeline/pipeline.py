@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 import torch
 import torch.nn.functional as F
 
+from diff_pipeline._cache import lru_cached
 
 if TYPE_CHECKING:
     from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
@@ -64,6 +65,7 @@ log = logging.getLogger(__name__)
 # ldm_patched/modules/model_management.py).  Imported once at first use so
 # that the module can be imported without a running webui environment.
 # ---------------------------------------------------------------------------
+@lru_cached
 def _get_stream_module():
     """Return modules_forge.stream, or None if unavailable."""
     try:
@@ -72,6 +74,7 @@ def _get_stream_module():
     except Exception:
         return None
 
+@lru_cached
 def _get_pin_shared_memory() -> bool:
     """Return True when --pin-shared-memory was requested."""
     try:

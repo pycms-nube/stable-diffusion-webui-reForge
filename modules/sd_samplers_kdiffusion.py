@@ -146,14 +146,30 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
         scheduler_name = (p.hr_scheduler if p.is_hr_pass else p.scheduler) or 'Automatic'
         if scheduler_name == 'Automatic':
             scheduler_name = self.config.options.get('scheduler', None)
+            # When the Diffusers pipeline is active and this sampler has no
+            # default scheduler (Euler, LMS, Heun, …), fall back to 'karras'
+            # so the HF sigma schedule is used instead of ldm get_sigmas().
+            if scheduler_name is None and getattr(getattr(shared, 'sd_model', None), 'diff_pipeline', None) is not None:
+                scheduler_name = 'karras'
 
         scheduler = sd_schedulers.schedulers_map.get(scheduler_name)
 
         m_sigma_min, m_sigma_max = self.model_wrap.sigmas[0].item(), self.model_wrap.sigmas[-1].item()
         sigma_min, sigma_max = (0.1, 10) if shared.opts.use_old_karras_scheduler_sigmas else (m_sigma_min, m_sigma_max)
 
+        # When the Diffusers pipeline is active, use the mapped Diffusers
+        # scheduler to generate sigmas (if a mapping exists for this name).
+        _diff_sigmas = None
+        if getattr(getattr(shared, 'sd_model', None), 'diff_pipeline', None) is not None:
+            _sched_key = scheduler.name if scheduler is not None else ''
+            if _sched_key:
+                from diff_pipeline.schedulers import get_diffusers_sigmas
+                _diff_sigmas = get_diffusers_sigmas(_sched_key, steps, shared.device)
+
         if p.sampler_noise_scheduler_override:
             sigmas = p.sampler_noise_scheduler_override(steps)
+        elif _diff_sigmas is not None:
+            sigmas = _diff_sigmas
         elif scheduler is None or scheduler.function is None:
             sigmas = self.model_wrap.get_sigmas(steps)
         else:
