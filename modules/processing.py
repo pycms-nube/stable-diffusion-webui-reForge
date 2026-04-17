@@ -989,7 +989,8 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
     infotexts = []
     output_images = []
-    with torch.inference_mode():
+    _grad_ctx = torch.inference_mode() if shared.cmd_opts.inference_mode else torch.no_grad()
+    with _grad_ctx:
         with devices.autocast():
             p.init(p.all_prompts, p.all_seeds, p.all_subseeds)
 

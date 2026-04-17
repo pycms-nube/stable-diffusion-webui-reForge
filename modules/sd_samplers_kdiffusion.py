@@ -25,7 +25,8 @@ samplers_k_diffusion = [
     ('DPM++ 2S a', 'sample_dpmpp_2s_ancestral', ['k_dpmpp_2s_a'], {'scheduler': 'karras', "uses_ensd": True, "second_order": True}),
     ('DPM++ 3M SDE', 'sample_dpmpp_3m_sde', ['k_dpmpp_3m_sde'], {'scheduler': 'exponential', 'discard_next_to_last_sigma': True, "brownian_noise": True}),
     ('Euler a', 'sample_euler_ancestral', ['k_euler_a', 'k_euler_ancestral'], {"uses_ensd": True}),
-    ('Euler A2', 'sample_euler_a2', ['k_euler_a2'], {"uses_ensd": True}),
+    ('Euler A2 (RF)', 'sample_euler_a2', ['k_euler_a2'], {"uses_ensd": True}),
+    ('Euler A2 (EDM)', 'sample_euler_a2_edm', ['k_euler_a2_edm'], {"uses_ensd": True}),
     ('Euler', 'sample_euler', ['k_euler'], {}),
     ('LMS', 'sample_lms', ['k_lms'], {}),
     ('Heun', 'sample_heun', ['k_heun'], {"second_order": True}),
@@ -34,6 +35,8 @@ samplers_k_diffusion = [
     ('DPM fast', 'sample_dpm_fast', ['k_dpm_fast'], {"uses_ensd": True}),
     ('DPM adaptive', 'sample_dpm_adaptive', ['k_dpm_ad'], {"uses_ensd": True}),
     ('Restart', sd_samplers_extra.restart_sampler, ['restart'], {'scheduler': 'karras', "second_order": True}),
+    ('DC-Solver', 'sample_dc_solver', ['k_dc_solver'], {'scheduler': 'karras'}),
+    ('SURE', 'sample_sure', ['k_sure'], {'scheduler': 'karras'}),
 ]
 
 additional_samplers = [
@@ -127,6 +130,8 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
             self.func = funcname
         elif hasattr(_get_sampling(), funcname):
             self.func = getattr(_get_sampling(), funcname)
+        elif hasattr(_sampling_default, funcname):
+            self.func = getattr(_sampling_default, funcname)
         elif hasattr(sd_samplers_kdiffusion_smea, funcname):
             self.func = getattr(sd_samplers_kdiffusion_smea, funcname)
         else:

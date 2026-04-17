@@ -786,7 +786,7 @@ options_templates.update(options_section(('sampler-params', "Custom Sampler Para
     # Common sampler parameters
     "custom_sampler_name": OptionInfo("euler_comfy", "Custom Sampler - Type", gr.Dropdown, {
         "choices": [
-            "euler_comfy", "euler_ancestral_comfy", "euler_a2", "heun_comfy", 
+            "euler_comfy", "euler_ancestral_comfy", "euler_a2", "euler_a2_edm", "heun_comfy",
             "dpmpp_2s_ancestral_comfy", "dpmpp_sde_comfy", "dpmpp_2m_comfy",
             "dpmpp_2m_sde_comfy", "dpmpp_3m_sde_comfy", "euler_ancestral_turbo",
             "dpmpp_2m_turbo", "dpmpp_2m_sde_turbo", "ddpm", "heunpp2",

@@ -189,3 +189,11 @@ parser.add_argument(
          "By default all network fetches are blocked; only locally cached files are used.",
     default=False,
 )
+parser.add_argument(
+    "--inference-mode",
+    action="store_true",
+    help="Use torch.inference_mode() instead of torch.no_grad() during sampling. "
+         "Slightly faster and uses less memory, but disables autograd — samplers that "
+         "require gradients (e.g. SURE) will fall back to an analytical approximation.",
+    default=False,
+)

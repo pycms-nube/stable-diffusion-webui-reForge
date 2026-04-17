@@ -568,7 +568,8 @@ def sample_euler_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
 
 @torch.no_grad()
 def sample_euler_a2(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None):
-    """Euler ancestral sampler that averages two noise paths and extrapolates along their mean direction."""
+    """Euler ancestral sampler that averages two noise paths and extrapolates along their mean direction.
+    Assumes Rectified Flow parameterization (alpha=1-sigma, sigma in [0,1]). For FLUX/SD3 (CONST model type)."""
     extra_args = {} if extra_args is None else extra_args
     eta = extra_args.get("eta", modules.shared.opts.euler_a2_eta)
     s_noise = extra_args.get("s_noise", modules.shared.opts.euler_a2_s_noise)
@@ -607,6 +608,48 @@ def sample_euler_a2(model, x, sigmas, extra_args=None, callback=None, disable=No
             path_2 = base + noise_2 * noise_scale
             merged = 0.5 * (path_1 + path_2)
             direction = merged - base
+            x = merged + extrapolation * direction
+        else:
+            x = deterministic_path
+    return x
+
+@torch.no_grad()
+def sample_euler_a2_edm(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None):
+    """Euler A2 for EDM/Karras models (SDXL, SD1.5): x_t = x0 + sigma*noise, no alpha term.
+    Uses get_ancestral_step for correct sigma_down/sigma_up budget, then applies dual-path averaging + extrapolation."""
+    extra_args = {} if extra_args is None else extra_args
+    eta = extra_args.get("eta", modules.shared.opts.euler_a2_eta)
+    s_noise = extra_args.get("s_noise", modules.shared.opts.euler_a2_s_noise)
+    extrapolation = extra_args.get("extrapolation", modules.shared.opts.euler_a2_extrapolation)
+
+    seed = extra_args.get("seed", None)
+    noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
+    s_in = x.new_ones([x.shape[0]])
+
+    for i in trange(len(sigmas) - 1, disable=disable):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+
+        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
+
+        if sigma_down == 0:
+            x = denoised
+            continue
+
+        d = to_d(x, sigmas[i], denoised)
+        dt = sigma_down - sigmas[i]
+        deterministic_path = x + d * dt
+
+        if eta > 0 and s_noise != 0 and sigma_up > 0:
+            noise_scale = s_noise * sigma_up
+            noise_1 = noise_sampler(sigmas[i], sigmas[i + 1])
+            noise_2 = noise_sampler(sigmas[i], sigmas[i + 1])
+
+            path_1 = deterministic_path + noise_1 * noise_scale
+            path_2 = deterministic_path + noise_2 * noise_scale
+            merged = 0.5 * (path_1 + path_2)
+            direction = merged - deterministic_path
             x = merged + extrapolation * direction
         else:
             x = deterministic_path
@@ -3138,6 +3181,7 @@ def sample_custom(model, x, sigmas, extra_args=None, callback=None, disable=None
             'euler_comfy': sample_euler,
             'euler_ancestral_comfy': sample_euler_ancestral,
             'euler_a2': sample_euler_a2,
+            'euler_a2_edm': sample_euler_a2_edm,
             'heun_comfy': sample_heun,
             'dpmpp_2s_ancestral_comfy': sample_dpmpp_2s_ancestral,
             'dpmpp_sde_comfy': sample_dpmpp_sde,
@@ -3642,4 +3686,307 @@ def sample_exp_heun_2_x0(model, x, sigmas, extra_args=None, callback=None, disab
 def sample_exp_heun_2_x0_sde(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, solver_type="phi_2"):
     """Stochastic exponential Heun second order method in data prediction (x0) and logSNR time."""
     return sample_seeds_2(model, x, sigmas, extra_args=extra_args, callback=callback, disable=disable, eta=eta, s_noise=s_noise, noise_sampler=noise_sampler, r=1.0, solver_type=solver_type)
+
+
+# ---------------------------------------------------------------------------
+# DC-Solver (ECCV 2024) — Predictor-Corrector with Dynamic Compensation
+# Ported to EDM sigma-space from https://github.com/wl-zhao/DC-Solver
+# DC-Solver corrects predictor-corrector misalignment by interpolating previous
+# model outputs to a fractional time point before each corrector step.
+# ---------------------------------------------------------------------------
+
+def _dc_dynamic_compensation(model_prev_list, sigma_prev_list, ratio, dc_order):
+    """Lagrange polynomial interpolation of past model outputs at fractional sigma."""
+    sigma_prev = sigma_prev_list[-2]
+    sigma_cur  = sigma_prev_list[-1]
+    # interpolate in log-sigma space
+    log_target = (1 - ratio) * sigma_prev.log() + ratio * sigma_cur.log()
+    sigma_target = log_target.exp()
+
+    result = torch.zeros_like(model_prev_list[-1])
+    n = min(dc_order + 1, len(model_prev_list))
+    for i in range(n):
+        term = model_prev_list[-(i + 1)]
+        for j in range(n):
+            if i != j:
+                si = sigma_prev_list[-(i + 1)].log()
+                sj = sigma_prev_list[-(j + 1)].log()
+                coeff = (log_target - sj) / (si - sj)
+                term = term * coeff
+        result = result + term
+    return result
+
+
+@torch.no_grad()
+def sample_dc_solver(model, x, sigmas, extra_args=None, callback=None, disable=None,
+                     order=2, dc_ratios=None):
+    """DC-Solver: multistep predictor-corrector with dynamic compensation in EDM sigma-space.
+
+    dc_ratios: list of floats in [0,1] controlling compensation per step.
+               1.0 = no compensation (pure predictor-corrector).
+               If None, defaults to all 1.0 (equivalent to DPM-Solver++(2M)).
+    """
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+    sigma_fn = lambda t: t.neg().exp()
+    t_fn     = lambda sigma: sigma.log().neg()
+
+    steps = len(sigmas) - 1
+    if dc_ratios is None:
+        dc_ratios = [1.0] * steps
+    dc_ratios = list(dc_ratios)
+
+    model_prev_list  = []
+    sigma_prev_list  = []
+
+    for i in trange(steps, disable=disable):
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+
+        # --- dynamic compensation: warp last model output before predictor ---
+        ratio = dc_ratios[i] if i < len(dc_ratios) else 1.0
+        if ratio != 1.0 and len(model_prev_list) >= 2:
+            model_prev_list[-1] = _dc_dynamic_compensation(
+                model_prev_list, sigma_prev_list, ratio, dc_order=order
+            )
+
+        denoised = model(x, sigma * s_in, **extra_args)
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
+
+        model_prev_list.append(denoised)
+        sigma_prev_list.append(sigma)
+
+        t, t_next = t_fn(sigma), t_fn(sigma_next)
+        h = t_next - t
+
+        if sigma_next == 0:
+            x = denoised
+        elif len(model_prev_list) == 1 or order == 1:
+            # first-order: Euler in log-sigma space (DPM-Solver++(1))
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised
+        else:
+            # second-order multistep corrector (DPM-Solver++(2M) style)
+            t_prev = t_fn(sigma_prev_list[-2])
+            h_last = t - t_prev
+            r = h_last / h
+            denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * model_prev_list[-2]
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
+
+        # keep history window at size = order
+        if len(model_prev_list) > order:
+            model_prev_list.pop(0)
+            sigma_prev_list.pop(0)
+
+    return x
+
+
+# ---------------------------------------------------------------------------
+# SURE Guided Posterior Sampling (Dec 2024) — trajectory correction via SURE
+# Based on https://arxiv.org/html/2512.23232v1
+# At each step: denoise → compute SURE gradient on x̂₀ → correct → re-noise.
+# NOTE: requires torch.enable_grad; @torch.no_grad is intentionally omitted.
+# ---------------------------------------------------------------------------
+
+import time as _time
+import logging as _logging
+
+_sure_logger = _logging.getLogger("sure_sampler")
+
+
+def _sure_timer(device):
+    """Returns a callable that gives elapsed ms since construction, GPU-accurate on CUDA."""
+    if device.type == "cuda":
+        start = torch.cuda.Event(enable_timing=True)
+        end   = torch.cuda.Event(enable_timing=True)
+        start.record()
+        def elapsed():
+            end.record()
+            torch.cuda.synchronize()
+            return start.elapsed_time(end)  # ms
+    else:
+        t0 = _time.perf_counter()
+        def elapsed():
+            return (_time.perf_counter() - t0) * 1000.0  # ms
+    return elapsed
+
+
+def _repeat_extra_args(extra_args, n):
+    """Repeat batch-dimension of tensor values in extra_args by n times."""
+    if n == 1:
+        return extra_args
+    repeated = {}
+    for k, v in extra_args.items():
+        if isinstance(v, torch.Tensor) and v.dim() >= 1:
+            repeated[k] = v.repeat(n, *([1] * (v.dim() - 1)))
+        else:
+            repeated[k] = v
+    return repeated
+
+
+def _mc_jac_trace(model, x0_hat, sigma_hat, s_in, extra_args, n_mc, eps_mc):
+    """Batched Monte Carlo Jacobian trace: one model call for all n_mc samples.
+
+    Repeats the batch along dim-0 by n_mc, runs a single forward pass, then
+    reduces — replacing n_mc sequential model calls with one larger call.
+    tr(J) ≈ mean_k [ b_k^T (D(x̂₀ + ε·b_k) - x̂₀) / ε ]
+    """
+    spatial = [1] * (x0_hat.dim() - 1)
+
+    t_prep = _sure_timer(x0_hat.device)
+    x0_rep = x0_hat.detach().repeat(n_mc, *spatial)
+    b = torch.randn_like(x0_rep)
+    x0_perturbed = x0_rep + eps_mc * b
+    x_noisy_p = x0_perturbed + sigma_hat * torch.randn_like(x0_perturbed)
+    s_in_rep = s_in.repeat(n_mc)
+    extra_rep = _repeat_extra_args(extra_args, n_mc)
+    ms_prep = t_prep()
+
+    t_fwd = _sure_timer(x0_hat.device)
+    d_perturbed = model(x_noisy_p, sigma_hat * s_in_rep, **extra_rep).detach()
+    ms_fwd = t_fwd()
+
+    t_reduce = _sure_timer(x0_hat.device)
+    x0_ref = x0_hat.detach().repeat(n_mc, *spatial)
+    jac_trace = (b * (d_perturbed - x0_ref)).sum() / (eps_mc * n_mc)
+    ms_reduce = t_reduce()
+
+    _sure_logger.debug(
+        "[MC-jac]  prep=%.1fms  batched-fwd(n_mc=%d)=%.1fms  reduce=%.1fms",
+        ms_prep, n_mc, ms_fwd, ms_reduce,
+    )
+    return jac_trace
+
+
+def _sure_correct(model, x, sigma, s_in, extra_args, alpha=0.1, n_mc=1, eps_mc=1e-3):
+    """Single SURE gradient correction step in EDM sigma-space.
+
+    Computes an unbiased MSE estimate (SURE) of the denoising error and takes
+    one gradient step on x̂₀ to reduce it, then returns the corrected estimate.
+
+    sigma:   current noise level (scalar tensor)
+    alpha:   step size for the SURE gradient descent
+    n_mc:    number of Monte Carlo samples for Jacobian trace estimate (batched)
+    eps_mc:  finite-difference epsilon for Jacobian-vector product
+    """
+    # torch.inference_mode() cannot be overridden by enable_grad(), unlike no_grad().
+    # Detect it by probing whether enable_grad actually re-enables autograd.
+    try:
+        with torch.enable_grad():
+            _probe = torch.tensor(1.0, requires_grad=True)
+            _probe2 = _probe * 2
+        _autograd_available = bool(_probe2.requires_grad)
+    except Exception:
+        _autograd_available = False
+
+    if not _autograd_available:
+        import warnings
+        warnings.warn(
+            "SURE sampler: autograd is unavailable (torch.inference_mode() is active). "
+            "Falling back to analytical gradient approximation: grad = -2 * residual. "
+            "Pass --no-inference-mode (or omit --inference-mode) to use exact autograd.",
+            stacklevel=2,
+        )
+        with torch.no_grad():
+            t_denoise = _sure_timer(x.device)
+            x_in = x.detach()
+            x0_hat = model(x_in, sigma * s_in, **extra_args).detach()
+            ms_denoise = t_denoise()
+
+            residual = x_in - x0_hat
+            sigma_hat = sigma.clamp(min=eps_mc)
+
+            t_mc = _sure_timer(x.device)
+            jac_trace = _mc_jac_trace(model, x0_hat, sigma_hat, s_in, extra_args, n_mc, eps_mc)
+            ms_mc = t_mc()
+
+            _sure_logger.debug(
+                "[fallback] denoise=%.1fms  mc-jac=%.1fms", ms_denoise, ms_mc,
+            )
+            grad = -2.0 * residual
+            return x0_hat - alpha * grad
+
+    with torch.enable_grad():
+        t_denoise = _sure_timer(x.device)
+        x_in = x.detach().requires_grad_(False)
+        x0_hat = model(x_in, sigma * s_in, **extra_args)
+        x0_hat = x0_hat.detach().requires_grad_(True)
+        ms_denoise = t_denoise()
+
+        residual = x_in - x0_hat
+
+        sigma_hat = sigma.clamp(min=eps_mc)
+
+        t_mc = _sure_timer(x.device)
+        jac_trace = _mc_jac_trace(model, x0_hat, sigma_hat, s_in, extra_args, n_mc, eps_mc)
+        ms_mc = t_mc()
+
+        t_grad = _sure_timer(x.device)
+        n_pixels = x.numel()
+        sigma2 = sigma_hat ** 2
+        sure_val = (residual ** 2).sum() + 2 * sigma2 * jac_trace - n_pixels * sigma2
+        sure_val.backward()
+        grad = x0_hat.grad.detach()
+        ms_grad = t_grad()
+
+        _sure_logger.debug(
+            "[autograd] denoise=%.1fms  mc-jac=%.1fms  backward=%.1fms",
+            ms_denoise, ms_mc, ms_grad,
+        )
+
+        x0_corrected = x0_hat.detach() - alpha * grad
+
+    return x0_corrected
+
+
+def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
+                sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3):
+    """SURE Guided Posterior Sampling in EDM sigma-space.
+
+    Each denoising step:
+      1. Denoise x_t → x̂₀
+      2. Correct x̂₀ via one SURE gradient step (reduces trajectory deviation)
+      3. Re-noise corrected x̂₀ to sigma_{t-1}
+
+    sure_alpha: SURE gradient step size (smaller = more conservative correction)
+    sure_n_mc:  Monte Carlo samples for Jacobian trace (1 is usually sufficient)
+    sure_eps:   finite-difference epsilon for Jacobian estimation
+
+    Timing: set logger "sure_sampler" to DEBUG to see per-step breakdowns.
+    """
+    extra_args = {} if extra_args is None else extra_args
+    s_in = x.new_ones([x.shape[0]])
+
+    step_times = []
+
+    for i in trange(len(sigmas) - 1, disable=disable):
+        sigma      = sigmas[i]
+        sigma_next = sigmas[i + 1]
+
+        t_step = _sure_timer(x.device)
+
+        # --- SURE-corrected denoised estimate ---
+        x0_hat = _sure_correct(model, x, sigma, s_in, extra_args,
+                                alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps)
+
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': x0_hat})
+
+        if sigma_next == 0:
+            x = x0_hat
+        else:
+            x = x0_hat + sigma_next * torch.randn_like(x0_hat)
+
+        ms_step = t_step()
+        step_times.append(ms_step)
+        _sure_logger.debug("step %d/%d  total=%.1fms  sigma=%.4f", i + 1, len(sigmas) - 1, ms_step, sigma.item())
+
+    if step_times:
+        total = sum(step_times)
+        _sure_logger.info(
+            "SURE timing summary: %d steps  total=%.0fms  mean=%.1fms/step  min=%.1fms  max=%.1fms",
+            len(step_times), total, total / len(step_times), min(step_times), max(step_times),
+        )
+
+    return x
 
