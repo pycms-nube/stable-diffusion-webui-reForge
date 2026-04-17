@@ -4739,232 +4739,239 @@ def _sure_correct(model, x, sigma, s_in, extra_args, alpha=0.1, n_mc=1, eps_mc=1
     return x0_corrected, _stats
 
 
+def _pca_noise_estimate(x0_hat, patch_size=8, min_sigma=1e-3):
+    """PCA-based residual noise level estimation per Algorithm 1 of SGPS.
+
+    Extracts spatial patches from x0_hat, computes the patch covariance matrix,
+    and iteratively excludes the largest eigenvalues until mean ≈ median of the
+    remaining set.  Returns σ̂₀ = √τ clamped to [min_sigma, ∞).
+
+    Operates on the first batch item; shape (B, C, H, W) → scalar float.
+    """
+    img = x0_hat[0].detach().float()   # (C, H, W)
+    C, H, W = img.shape
+
+    ph = H // patch_size
+    pw = W // patch_size
+    if ph < 2 or pw < 2:
+        return min_sigma
+
+    # Extract non-overlapping patches → (n_patches, C*patch_size*patch_size)
+    cropped = img[:, :ph * patch_size, :pw * patch_size]          # (C, ph*p, pw*p)
+    unf = cropped.unfold(1, patch_size, patch_size).unfold(2, patch_size, patch_size)
+    # unf: (C, ph, pw, patch_size, patch_size)
+    patches = unf.permute(1, 2, 0, 3, 4).reshape(ph * pw, C * patch_size * patch_size)
+
+    n_patches, dim = patches.shape
+    if n_patches < 2 or dim < 2:
+        return min_sigma
+
+    # Covariance and eigenvalues (descending)
+    mu = patches.mean(0, keepdim=True)
+    centered = patches - mu
+    cov = (centered.T @ centered) / (n_patches - 1)   # (dim, dim)
+    try:
+        eigvals = torch.linalg.eigvalsh(cov).flip(0).clamp(min=0.0)
+    except Exception:
+        return min_sigma
+
+    r = len(eigvals)
+    tau = float(eigvals.mean())
+    for i in range(r - 1):
+        remaining = eigvals[i:]
+        tau = float(remaining.mean())
+        median_val = float(remaining.median())
+        if abs(tau - median_val) / (abs(median_val) + 1e-8) < 0.1:
+            break
+
+    return max(float(tau ** 0.5), min_sigma)
+
+
+def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
+                     alpha=0.05, n_mc=1, eps_mc=1e-3, use_jac=True):
+    """SURE gradient correction per Algorithm 1 of arXiv:2512.23232.
+
+    Exactly implements the paper's MC-SURE step:
+
+      ε       = max(|xnoisy|) / 1000   (paper §2.4 recommended choice)
+      x̂      = Dθ(xnoisy, σ̂₀)
+      tr{J}  ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) · ε^{-1}
+                averaged over n_mc draws of b ~ N(0, I)
+      SURE   = −n·σ̂₀² + ‖xnoisy − x̂‖² + 2·σ̂₀²·tr{J}
+      x0_corrected = x0_hat − α · ∇_{xnoisy} SURE
+
+    Gradient is computed via autograd through both Dθ calls from the same
+    xnoisy leaf.  Falls back to the residual-only gradient (2·residual,
+    stop-grad on x̂) when autograd is unavailable (inference_mode).
+    """
+    # ε: paper says max_pixel / 1000; clamp to eps_mc for numerical safety
+    eps = max(float(x0_hat.abs().max().item()) / 1000.0, float(eps_mc))
+
+    sigma_t = torch.tensor(sigma_hat_0, device=x0_hat.device, dtype=x0_hat.dtype)
+    # max(ε, σ̂₀) — Algorithm 1 uses this for the perturbed denoiser call
+    sigma_p = torch.tensor(max(eps, sigma_hat_0), device=x0_hat.device, dtype=x0_hat.dtype)
+    sigma2  = float(sigma_t ** 2)
+
+    # Autograd availability probe (torch.inference_mode blocks enable_grad)
+    try:
+        with torch.enable_grad():
+            _probe = torch.tensor(1.0, requires_grad=True) * 2
+        _grad_ok = bool(_probe.requires_grad)
+    except Exception:
+        _grad_ok = False
+
+    # Use eager (un-compiled) model to avoid CUDA-graph / autograd conflicts
+    eager = getattr(model, '_orig_mod', model)
+
+    if _grad_ok and use_jac:
+        if x0_hat.device.type == "cuda":
+            torch.cuda.empty_cache()
+        xnoisy = x0_hat.detach().requires_grad_(True)
+        try:
+            with torch.enable_grad():
+                # x̂ = Dθ(xnoisy, σ̂₀) — grad flows from here
+                x_hat = eager(xnoisy, sigma_t * s_in, **extra_args)
+
+                # ‖xnoisy − x̂‖²
+                residual_sq = ((xnoisy - x_hat) ** 2).sum()
+
+                # MC Jacobian trace (averaged over n_mc samples)
+                # tr{J} ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) / ε
+                # x_hat detached as anchor so its grad doesn't double-count
+                jac_acc = torch.zeros(1, device=x0_hat.device, dtype=x0_hat.dtype)
+                for _ in range(n_mc):
+                    b = torch.randn_like(xnoisy)
+                    x_pert_hat = eager(xnoisy + eps * b, sigma_p * s_in, **extra_args)
+                    jac_acc = jac_acc + (b * (x_pert_hat - x_hat.detach())).sum() / eps
+                jac_trace_val = float(jac_acc.item()) / n_mc
+
+                # SURE scalar (constant −nσ̂₀² contributes zero to gradient)
+                sure_scalar = residual_sq + 2.0 * sigma2 * (jac_acc / n_mc)
+                (grad,) = torch.autograd.grad(sure_scalar, xnoisy)
+
+            x0_corrected = (x0_hat - alpha * grad.detach()).detach()
+            _sure_logger.info(
+                "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  "
+                "sure=%.4f  jac_trace=%.4f  grad_rms=%.5f",
+                eps, sigma_hat_0, float(sigma_p),
+                float(sure_scalar), jac_trace_val,
+                float((grad ** 2).mean() ** 0.5),
+            )
+        except Exception as exc:
+            _sure_logger.warning("[sure_x0] autograd path failed (%s) — residual fallback", exc)
+            with torch.no_grad():
+                x_hat_fb = model(x0_hat.detach(), sigma_t * s_in, **extra_args).detach()
+            grad = 2.0 * (x0_hat - x_hat_fb)
+            x0_std = x0_hat.std().item()
+            gs = grad.std().item()
+            if gs > x0_std > 0:
+                grad = grad * (x0_std / gs)
+            x0_corrected = (x0_hat - alpha * grad.clamp(-3 * x0_std, 3 * x0_std)).detach()
+    else:
+        # Residual-only fallback: ∇SURE ≈ 2·(xnoisy − x̂)  (stop-grad on x̂)
+        with torch.no_grad():
+            x_hat = model(x0_hat.detach(), sigma_t * s_in, **extra_args).detach()
+        grad = 2.0 * (x0_hat - x_hat)
+        x0_std = x0_hat.std().item()
+        gs = grad.std().item()
+        if gs > x0_std > 0:
+            grad = grad * (x0_std / gs)
+        x0_corrected = (x0_hat - alpha * grad.clamp(-3 * x0_std, 3 * x0_std)).detach()
+        _sure_logger.info(
+            "[sure_x0] residual-only (no autograd)  eps=%.5f  sigma_hat_0=%.5f",
+            eps, sigma_hat_0,
+        )
+
+    return x0_corrected, {'jac_ratio': None}
+
+
 def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                 sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                sure_preheat_steps=-1, sure_jac_interval=-1):
-    """SURE Guided Posterior Sampling in EDM sigma-space (fixed schedule).
+                sure_jac_interval=2):
+    """SURE Guided Posterior Sampling (SGPS) — Euler Ancestral variant.
 
-    Preheat behaviour (matching DPM-Adaptive's "extra steps" pattern):
+    Implements Algorithm 1 from arXiv:2512.23232 directly.  Every step:
 
-      sure_preheat_steps >= 0  — Fixed preheat.
-        The received sigmas determine the CORRECTION step count (N = len(sigmas)-1).
-        An additional `sure_preheat_steps` plain-denoise steps are prepended by
-        extending the Karras schedule over the same sigma range with N+preheat
-        total steps.  Preheat does NOT reduce the user's N correction steps.
-        Default fixed preheat: ceil(0.3 * N).
+      1. Denoising + CFG:  x̂₀ = model(xₜ, σₜ)          [deterministic, no noise]
+      2. PCA noise est.:   σ̂₀ = _pca_noise_estimate(x̂₀) [residual noise in x̂₀]
+      3. SURE correction:  x̂*₀ = x̂₀ − α·∇SURE(x̂₀, σ̂₀) [gradient in x0-space]
+      4. Re-add noise:     xₜ₋₁ = x̂*₀ + σₜ₋₁·ε         [Euler Ancestral]
 
-      sure_preheat_steps = -1  — Adaptive preheat (default).
-        Runs plain denoise until x0_std EMA has risen above the mid-sigma peak
-        (≥ 1.3) and then fallen back below the gate (< 1.2), which indicates
-        x̂₀ has converged enough for safe SURE correction.  No sigma extension —
-        preheat length is determined by the data.
+    No preheat — SURE correction is applied at every step from T to 1.
 
     sure_alpha:        SURE gradient step size
     sure_n_mc:         Monte Carlo samples for Jacobian trace
-    sure_eps:          finite-difference epsilon
-    sure_jac_interval: full autograd Jacobian every N correction steps.
-                       -1 = start at 2, adapt from jac contribution ratio.
+    sure_eps:          finite-difference epsilon for MC Jacobian
+    sure_jac_interval: compute full Jacobian every N steps; adapt from jac_ratio
     """
     extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+    noise_sampler = default_noise_sampler(x, seed=seed)
     s_in = x.new_ones([x.shape[0]])
 
-    n_correction = len(sigmas) - 1  # user-requested correction steps
-    sigma_max    = float(sigmas[0])
-    sigma_min    = float(sigmas[-2]) if len(sigmas) > 1 and float(sigmas[-2]) > 0 else float(sigmas[-1])
-
     _EMA_A = 0.35
-    _X0_STD_PEAK = 1.3
-    _X0_STD_GATE = 1.2
-
-    # ── Build preheat_sigmas and correction_sigmas ────────────────────────────
-    # Preheat is always a separate silent loop so those steps never reduce the
-    # user's N correction-step budget.  After preheat the correction phase runs
-    # its own fresh trange(n_correction) progress bar.
-
-    if sure_preheat_steps >= 0:
-        # Mode A: fixed preheat.
-        # Extend the Karras schedule by K steps, then split: first K steps are
-        # the silent preheat, the remaining N steps are the correction trange.
-        preheat = sure_preheat_steps
-        if preheat > 0 and sigma_min > 0 and sigma_max > sigma_min:
-            _full = get_sigmas_karras(n_correction + preheat, sigma_min, sigma_max,
-                                      device=sigmas.device)
-            preheat_sigmas    = _full[:preheat + 1]  # K+1 values → K preheat steps
-            correction_sigmas = _full[preheat:]      # N+1 values → N correction steps
-        else:
-            preheat_sigmas    = None
-            correction_sigmas = sigmas
-        _adaptive_preheat = False
-        _sure_logger.info(
-            "SURE sampler: %d correction + %d preheat = %d total steps  alpha=%.4f",
-            n_correction, preheat,
-            n_correction + (0 if preheat_sigmas is None else len(preheat_sigmas) - 1),
-            sure_alpha,
-        )
-    else:
-        # Mode B: adaptive preheat.
-        # Use user's sigmas as the probe schedule; stop as soon as the two-threshold
-        # gate opens.  Then re-generate a fresh N-step Karras schedule from the
-        # gate-open sigma so the correction budget is always exactly n_correction.
-        preheat_sigmas    = sigmas          # probe schedule (original N steps)
-        correction_sigmas = None            # computed after gate opens
-        _adaptive_preheat = True
-        _sure_logger.info(
-            "SURE sampler: %d correction steps  adaptive preheat (peak≥%.1f then <%.1f)  alpha=%.4f",
-            n_correction, _X0_STD_PEAK, _X0_STD_GATE, sure_alpha,
-        )
-
-    # ── Adaptive jac_interval state (shared across both phases) ───────────────
-    _dyn_jac_interval: int        = 2 if sure_jac_interval < 1 else sure_jac_interval
+    _dyn_jac_interval: int        = max(1, sure_jac_interval)
     _jac_ratio_ema:   float | None = None
-    _corr_step_count: int          = 0
 
-    step_times: list = []
+    n_steps = len(sigmas) - 1
+    _sure_logger.info(
+        "SURE sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d",
+        n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval,
+    )
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Phase 1 — Preheat (silent, no progress bar)
-    # ═══════════════════════════════════════════════════════════════════════════
-    _x0_std_ema:       float | None = None
-    _x0_std_peak_seen: bool         = False
-    _gate_open_sigma:  float        = sigma_max  # fallback if gate never opens
-
-    if preheat_sigmas is not None:
-        n_preheat_steps = len(preheat_sigmas) - 1
-        for _pi in range(n_preheat_steps):
-            sigma      = preheat_sigmas[_pi]
-            sigma_next = preheat_sigmas[_pi + 1]
-            sigma_val  = sigma.item()
-
-            # Adaptive gate: check before taking the step
-            if _adaptive_preheat:
-                if (_x0_std_peak_seen and
-                        _x0_std_ema is not None and
-                        _x0_std_ema < _X0_STD_GATE):
-                    # Gate opened — correction starts from the CURRENT sigma
-                    _gate_open_sigma = sigma_val
-                    _sure_logger.info(
-                        "[preheat] gate opened at sigma=%.4f after %d preheat steps  ema=%.3f",
-                        _gate_open_sigma, _pi, _x0_std_ema,
-                    )
-                    break
-
-            _sure_logger.info(
-                "[preheat step=%d/%d sigma=%.4f]",
-                _pi + 1, n_preheat_steps, sigma_val,
-            )
-
-            with torch.no_grad():
-                x0_hat = model(x, sigma * s_in, **extra_args).detach()
-
-            if _adaptive_preheat:
-                _x0_std_new = float(x0_hat.std())
-                _x0_std_ema = _x0_std_new if _x0_std_ema is None else \
-                    (1.0 - _EMA_A) * _x0_std_ema + _EMA_A * _x0_std_new
-                if not _x0_std_peak_seen and _x0_std_ema >= _X0_STD_PEAK:
-                    _x0_std_peak_seen = True
-                    _sure_logger.info(
-                        "[preheat] peak seen (ema=%.3f >= %.1f) — gate opens below %.1f",
-                        _x0_std_ema, _X0_STD_PEAK, _X0_STD_GATE,
-                    )
-                _sure_logger.info(
-                    "[preheat] x0_std_ema=%.3f  peak_seen=%s  gate=%.2f",
-                    _x0_std_ema, _x0_std_peak_seen, _X0_STD_GATE,
-                )
-
-            if callback is not None:
-                callback({'x': x, 'i': -(_pi + 1), 'sigma': sigma,
-                          'sigma_hat': sigma, 'denoised': x0_hat})
-
-            x = x0_hat if float(sigma_next) == 0 else x0_hat + float(sigma_next) * torch.randn_like(x0_hat)
-
-        else:
-            # Loop completed without gate opening (adaptive) — start from last sigma
-            if _adaptive_preheat:
-                _gate_open_sigma = float(preheat_sigmas[-2]) if float(preheat_sigmas[-2]) > 0 \
-                    else float(preheat_sigmas[-1])
-                _sure_logger.info(
-                    "[preheat] schedule exhausted without gate opening; "
-                    "starting correction at sigma=%.4f", _gate_open_sigma,
-                )
-
-    # ── Build correction_sigmas if adaptive ───────────────────────────────────
-    if _adaptive_preheat:
-        if _gate_open_sigma > sigma_min and sigma_min > 0:
-            correction_sigmas = get_sigmas_karras(
-                n_correction, sigma_min, _gate_open_sigma, device=sigmas.device,
-            )
-        else:
-            # Degenerate: gate opened at or below sigma_min
-            correction_sigmas = sigmas
-        _sure_logger.info(
-            "[preheat] correction sigmas: %.4f → %.4f  (%d steps)",
-            float(correction_sigmas[0]), float(correction_sigmas[-2]),
-            len(correction_sigmas) - 1,
-        )
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Phase 2 — Correction (N steps with progress bar)
-    # ═══════════════════════════════════════════════════════════════════════════
-    n_corr_steps = len(correction_sigmas) - 1
-
-    for i in trange(n_corr_steps, disable=disable):
-        sigma      = correction_sigmas[i]
-        sigma_next = correction_sigmas[i + 1]
+    for i in trange(n_steps, disable=disable):
+        sigma      = sigmas[i]
+        sigma_next = sigmas[i + 1]
         sigma_val  = sigma.item()
-        t_step     = _sure_timer(x.device)
 
         _sure_logger.info(
-            "step %d/%d  sigma=%.4f  x_in  min=%.4f max=%.4f  nan=%s inf=%s",
-            i + 1, n_corr_steps, sigma_val,
-            x.min().item(), x.max().item(),
-            bool(torch.isnan(x).any()), bool(torch.isinf(x).any()),
+            "step %d/%d  sigma=%.4f  x_in  min=%.4f max=%.4f",
+            i + 1, n_steps, sigma_val, x.min().item(), x.max().item(),
         )
 
-        _tag = f" step={i+1}/{n_corr_steps} sigma={sigma_val:.4f}"
-        _use_jac = (_dyn_jac_interval <= 1) or (_corr_step_count % _dyn_jac_interval == 0)
-        x0_hat, _stats = _sure_correct(
-            model, x, sigma, s_in, extra_args,
+        # ── Step 1: Denoising + CFG (deterministic) ───────────────────────────
+        with torch.no_grad():
+            x0_hat = model(x, sigma * s_in, **extra_args).detach()
+
+        # ── Step 2: PCA residual noise estimate ───────────────────────────────
+        sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
+
+        # ── Step 3: SURE gradient correction on x0_hat at σ̂₀ ─────────────────
+        _use_jac = (_dyn_jac_interval <= 1) or (i % _dyn_jac_interval == 0)
+        x0_corrected, _stats = _sure_correct_x0(
+            model, x0_hat, sigma_hat_0, s_in, extra_args,
             alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-            use_jac=_use_jac, _step_tag=_tag,
+            use_jac=_use_jac,
         )
-        _corr_step_count += 1
-        _jac_ratio_new = _stats['jac_ratio']
 
-        # Adapt jac_interval
+        # Adapt jac_interval from jac_ratio EMA
+        _jac_ratio_new = _stats.get('jac_ratio')
         if _jac_ratio_new is not None:
             _jac_ratio_ema = _jac_ratio_new if _jac_ratio_ema is None else \
                 (1.0 - _EMA_A) * _jac_ratio_ema + _EMA_A * _jac_ratio_new
-        if _jac_ratio_ema is not None and _corr_step_count >= 3:
+        if _jac_ratio_ema is not None and i >= 2:
             if _jac_ratio_ema < 0.05 and _dyn_jac_interval < 8:
                 _dyn_jac_interval += 1
-                _sure_logger.info("[adapt] jac_interval -> %d  (jac_ratio_ema=%.3f < 0.05)",
+                _sure_logger.info("[adapt] jac_interval -> %d  (ratio_ema=%.3f < 0.05)",
                                   _dyn_jac_interval, _jac_ratio_ema)
             elif _jac_ratio_ema > 0.25 and _dyn_jac_interval > 1:
                 _dyn_jac_interval -= 1
-                _sure_logger.info("[adapt] jac_interval -> %d  (jac_ratio_ema=%.3f > 0.25)",
+                _sure_logger.info("[adapt] jac_interval -> %d  (ratio_ema=%.3f > 0.25)",
                                   _dyn_jac_interval, _jac_ratio_ema)
-        _sure_logger.info("[adapt] jac_ratio_ema=%s  dyn_jac_interval=%d",
-                          f"{_jac_ratio_ema:.3f}" if _jac_ratio_ema is not None else "n/a",
-                          _dyn_jac_interval)
 
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': x0_hat})
+            callback({'x': x, 'i': i, 'sigma': sigma,
+                      'sigma_hat': sigma, 'denoised': x0_corrected})
 
-        x = x0_hat if float(sigma_next) == 0 else x0_hat + float(sigma_next) * torch.randn_like(x0_hat)
+        # ── Step 4: Re-add noise σₜ₋₁ (Euler Ancestral / paper §3) ──────────
+        if float(sigma_next) == 0:
+            x = x0_corrected
+        else:
+            x = x0_corrected + float(sigma_next) * noise_sampler(sigma, sigma_next)
 
         _sure_logger.info(
-            "step %d/%d  x_out  min=%.4f max=%.4f  nan=%s inf=%s",
-            i + 1, n_corr_steps,
-            x.min().item(), x.max().item(),
-            bool(torch.isnan(x).any()), bool(torch.isinf(x).any()),
-        )
-        step_times.append(t_step())
-
-    if step_times:
-        total = sum(step_times)
-        _sure_logger.info(
-            "SURE timing summary: %d correction steps  total=%.0fms  mean=%.1fms/step",
-            _corr_step_count, total, total / len(step_times),
+            "step %d/%d  sigma_hat_0=%.5f  x_out  min=%.4f max=%.4f",
+            i + 1, n_steps, sigma_hat_0, x.min().item(), x.max().item(),
         )
 
     if x.device.type == "cuda":
