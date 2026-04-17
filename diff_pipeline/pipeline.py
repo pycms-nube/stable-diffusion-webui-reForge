@@ -793,7 +793,7 @@ class DiffPipeline():
             )
             for path, setter, module in group_a + group_b:
                 log.info("DiffPipeline: compiling block '%s' …", path)
-                compiled = torch.compile(module, mode="reduce-overhead", fullgraph=False)
+                compiled = torch.compile(module, mode="default", fullgraph=False)
                 setter(compiled)
             log.info(
                 "DiffPipeline: torch.compile done — %d blocks compiled. "
@@ -1270,11 +1270,11 @@ class DiffPipeline():
                 if device == "mps":
                     # MPS don't have max auto tune, inductor use as default
                     self._hf_unet = torch.compile(
-                    self._hf_unet, mode="reduce-overhead", fullgraph=False
-                )
+                        self._hf_unet, mode="default", fullgraph=False
+                    )
                 else:
                     self._hf_unet = torch.compile(
-                        self._hf_unet, mode="reduce-overhead", fullgraph=False
+                        self._hf_unet, mode="default", fullgraph=False
                     )
                 self._compiled = True
                 log.warning("DiffPipeline: torch.compile finished — graph cached, normal speed resumes.")
