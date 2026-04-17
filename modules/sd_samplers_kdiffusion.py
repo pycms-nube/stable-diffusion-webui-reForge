@@ -37,6 +37,12 @@ samplers_k_diffusion = [
     ('Restart', sd_samplers_extra.restart_sampler, ['restart'], {'scheduler': 'karras', "second_order": True}),
     ('DC-Solver', 'sample_dc_solver', ['k_dc_solver'], {'scheduler': 'karras'}),
     ('SURE', 'sample_sure', ['k_sure'], {'scheduler': 'karras'}),
+    ('SURE Adaptive', 'sample_sure_adaptive', ['k_sure_adaptive'], {}),
+    ('DPM++ 2M SURE', 'sample_dpmpp_2m_sure', ['k_dpmpp_2m_sure'], {'scheduler': 'karras'}),
+    ('DPM++ 2M SDE SURE', 'sample_dpmpp_2m_sde_sure', ['k_dpmpp_2m_sde_sure'], {'scheduler': 'exponential', 'brownian_noise': True}),
+    ('DPM++ 2M SDE SURE Adaptive', 'sample_dpmpp_2m_sde_sure_adaptive', ['k_dpmpp_2m_sde_sure_adaptive'], {}),
+    ('DPM++ 2S a SURE', 'sample_dpmpp_2s_a_sure', ['k_dpmpp_2s_a_sure'], {'scheduler': 'karras'}),
+    ('DPM++ 2S a SURE Adaptive', 'sample_dpmpp_2s_a_sure_adaptive', ['k_dpmpp_2s_a_sure_adaptive'], {}),
 ]
 
 additional_samplers = [
