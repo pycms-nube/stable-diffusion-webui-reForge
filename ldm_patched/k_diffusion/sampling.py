@@ -1173,7 +1173,7 @@ def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, dis
             denoised, _stats = _sure_correct_x0(
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                use_jac=_use_jac,
+                use_jac=_use_jac, sigma_t=sigma,
             )
             _corr_count += 1
             _jac_ratio_new = _stats.get('jac_ratio')
@@ -1298,7 +1298,7 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
                 x0_s, _ = _sure_correct_x0(
                     model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                    use_jac=_use_jac,
+                    use_jac=_use_jac, sigma_t=sigma_s,
                 )
                 _corr_count += 1
 
@@ -1597,7 +1597,7 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
             denoised, _stats = _sure_correct_x0(
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                use_jac=_use_jac,
+                use_jac=_use_jac, sigma_t=sigma,
             )
             _corr_count += 1
 
@@ -1718,7 +1718,7 @@ def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
             denoised, _stats = _sure_correct_x0(
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                use_jac=_use_jac,
+                use_jac=_use_jac, sigma_t=sigma,
             )
             _corr_count += 1
 
@@ -1978,7 +1978,7 @@ def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
             denoised, _stats = _sure_correct_x0(
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                use_jac=_use_jac,
+                use_jac=_use_jac, sigma_t=sigma,
             )
             _corr_count += 1
 
@@ -2137,7 +2137,7 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
                 x0_s, _ = _sure_correct_x0(
                     model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                    use_jac=_use_jac,
+                    use_jac=_use_jac, sigma_t=sigma_s,
                 )
                 _corr_count += 1
 
@@ -4953,7 +4953,8 @@ def _pca_noise_estimate(x0_hat, patch_size=8, min_sigma=1e-3):
 
 
 def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
-                     alpha=0.05, n_mc=1, eps_mc=1e-3, use_jac=True):
+                     alpha=0.05, n_mc=1, eps_mc=1e-3, use_jac=True,
+                     sigma_t=None):
     """SURE gradient correction per Algorithm 1 of arXiv:2512.23232.
 
     Two no-grad forward passes implement the MC-SURE step without backward:
@@ -4975,15 +4976,15 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
     # ε: paper says max_pixel / 1000; clamp to eps_mc for numerical safety
     eps = max(float(x0_hat.abs().max().item()) / 1000.0, float(eps_mc))
 
-    sigma_t = torch.tensor(sigma_hat_0, device=x0_hat.device, dtype=x0_hat.dtype)
+    sigma_denoiser = torch.tensor(sigma_hat_0, device=x0_hat.device, dtype=x0_hat.dtype)
     # max(ε, σ̂₀) — Algorithm 1 floors the perturbed denoiser sigma here
     sigma_p = torch.tensor(max(eps, sigma_hat_0), device=x0_hat.device, dtype=x0_hat.dtype)
-    sigma2  = float(sigma_t ** 2)
+    sigma2  = float(sigma_denoiser ** 2)
     n       = x0_hat.numel()
 
     with torch.no_grad():
         # Pass 1: x̂ = Dθ(xnoisy, σ̂₀)
-        x_hat    = model(x0_hat.detach(), sigma_t * s_in, **extra_args).detach()
+        x_hat    = model(x0_hat.detach(), sigma_denoiser * s_in, **extra_args).detach()
         residual = x0_hat - x_hat   # xnoisy − x̂
 
         # Pass 2 (optional): Dθ(xnoisy + ε·b, max(ε, σ̂₀)) for tr{J} scalar
@@ -5014,12 +5015,22 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
         grad = grad * (x0_std / gs)
     grad = grad.clamp(-3.0 * x0_std, 3.0 * x0_std)
 
-    x0_corrected = (x0_hat - alpha * grad).detach()
+    # Scale step size by current diffusion sigma so correction is near-zero at
+    # early high-noise steps and grows to full alpha at the final clean step.
+    # The paper operates after conditional guidance where σ̂₀ is already tiny;
+    # in unconditional txt2img the denoiser at step 1 (sigma≈14) produces a rough
+    # sketch and a fixed alpha would cause cumulative blur. sigma_t=None → no scaling.
+    if sigma_t is not None:
+        effective_alpha = alpha / (1.0 + float(sigma_t))
+    else:
+        effective_alpha = alpha
+
+    x0_corrected = (x0_hat - effective_alpha * grad).detach()
 
     _sure_logger.info(
-        "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  "
+        "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  eff_alpha=%.5f  "
         "sure=%.4f  jac_trace=%s  residual_rms=%.5f  grad_rms=%.5f",
-        eps, sigma_hat_0, float(sigma_p),
+        eps, sigma_hat_0, float(sigma_p), effective_alpha,
         sure_val,
         f"{jac_trace:.4f}" if jac_trace is not None else "n/a",
         float((residual ** 2).mean() ** 0.5),
@@ -5085,7 +5096,7 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
         x0_corrected, _stats = _sure_correct_x0(
             model, x0_hat, sigma_hat_0, s_in, extra_args,
             alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-            use_jac=_use_jac,
+            use_jac=_use_jac, sigma_t=sigma,
         )
 
         # Adapt jac_interval from jac_ratio EMA
@@ -5107,11 +5118,20 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
             callback({'x': x, 'i': i, 'sigma': sigma,
                       'sigma_hat': sigma, 'denoised': x0_corrected})
 
-        # ── Step 4: Re-add noise σₜ₋₁ (Euler Ancestral / paper §3) ──────────
+        # ── Step 4: Ancestral update from SURE-corrected x̂*₀ ────────────────
+        # Mirror Euler Ancestral: split sigma_next into deterministic (sigma_down)
+        # and stochastic (sigma_up) components. Pure re-noise (x0 + sigma_next·ε)
+        # discards the prior state and amplifies the model's latent bias; the
+        # ancestral split keeps the same trajectory dynamics as Euler a.
         if float(sigma_next) == 0:
             x = x0_corrected
         else:
-            x = x0_corrected + float(sigma_next) * noise_sampler(sigma, sigma_next)
+            sigma_down, sigma_up = get_ancestral_step(sigma, sigma_next, eta=1.0)
+            # Noise direction from current x using the SURE-corrected x0 estimate
+            d = (x - x0_corrected) / sigma
+            # Deterministic step to sigma_down, then inject sigma_up noise
+            x = x + d * (sigma_down - sigma)
+            x = x + sigma_up * noise_sampler(sigma, sigma_next)
 
         _sure_logger.info(
             "step %d/%d  sigma_hat_0=%.5f  x_out  min=%.4f max=%.4f",
@@ -5211,7 +5231,7 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
                 x0_s, _ = _sure_correct_x0(
                     model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                    use_jac=_use_jac,
+                    use_jac=_use_jac, sigma_t=sigma_s,
                 )
                 _corr_count += 1
 
