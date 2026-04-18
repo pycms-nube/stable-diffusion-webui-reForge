@@ -1160,19 +1160,23 @@ def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, dis
         sigma_down, sigma_up = get_ancestral_step(sigma, sigma_next, eta=eta)
 
         # ── x̂₀ at current state ──────────────────────────────────────────
+        with torch.no_grad():
+            x0_hat = model(x, sigma * s_in, **extra_args).detach()
+
         if i < preheat:
-            with torch.no_grad():
-                denoised = model(x, sigma * s_in, **extra_args).detach()
+            denoised = x0_hat
             _sure_logger.info("[preheat%s]", _tag)
         else:
+            # Algorithm 1: correct x̂₀ in x0-space at estimated residual noise σ̂₀
+            sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
             _use_jac = (_dyn_jac_interval <= 1) or (_corr_count % _dyn_jac_interval == 0)
-            denoised, _stats = _sure_correct(
-                model, x, sigma, s_in, extra_args,
+            denoised, _stats = _sure_correct_x0(
+                model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                use_jac=_use_jac, _step_tag=_tag,
+                use_jac=_use_jac,
             )
             _corr_count += 1
-            _jac_ratio_new = _stats['jac_ratio']
+            _jac_ratio_new = _stats.get('jac_ratio')
             if _jac_ratio_new is not None:
                 _jac_ratio_ema = _jac_ratio_new if _jac_ratio_ema is None else \
                     (1.0 - _EMA_A) * _jac_ratio_ema + _EMA_A * _jac_ratio_new
@@ -1287,11 +1291,14 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
                 with torch.no_grad():
                     x0_s = model(x, sigma_s * s_in, **extra_args).detach()
             else:
+                with torch.no_grad():
+                    x0_hat = model(x, sigma_s * s_in, **extra_args).detach()
+                sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
                 _use_jac = (sure_jac_interval <= 1) or (_corr_count % sure_jac_interval == 0)
-                x0_s, _ = _sure_correct(
-                    model, x, sigma_s, s_in, extra_args,
+                x0_s, _ = _sure_correct_x0(
+                    model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                    use_jac=_use_jac, _step_tag=_tag,
+                    use_jac=_use_jac,
                 )
                 _corr_count += 1
 
@@ -1582,12 +1589,15 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
                 denoised = model(x, sigma * s_in, **extra_args).detach()
             _sure_logger.info("[preheat%s]", _tag)
         else:
-            # ── Correction: SURE-guided denoiser ──────────────────────────────
+            # ── Correction: SURE-guided denoiser (x0-space, per paper Alg. 1) ─
+            with torch.no_grad():
+                x0_hat = model(x, sigma * s_in, **extra_args).detach()
+            sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
             _use_jac = (_dyn_jac_interval <= 1) or (_corr_count % _dyn_jac_interval == 0)
-            denoised, _stats = _sure_correct(
-                model, x, sigma, s_in, extra_args,
+            denoised, _stats = _sure_correct_x0(
+                model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                use_jac=_use_jac, _step_tag=_tag,
+                use_jac=_use_jac,
             )
             _corr_count += 1
 
@@ -1693,22 +1703,26 @@ def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
         sigma_next = sigmas[i + 1]
         _tag       = f" step={i+1}/{n_steps} sigma={float(sigma):.4f}"
 
+        # ── x̂₀ at current state ──────────────────────────────────────────
+        with torch.no_grad():
+            x0_hat = model(x, sigma * s_in, **extra_args).detach()
+
         if i < preheat:
             # ── Preheat: plain denoiser ───────────────────────────────────────
-            with torch.no_grad():
-                denoised = model(x, sigma * s_in, **extra_args).detach()
+            denoised = x0_hat
             _sure_logger.info("[preheat%s]", _tag)
         else:
-            # ── Correction: SURE-guided denoiser (x̂₀ correction) ─────────────
+            # ── Correction: Algorithm 1 — correct x̂₀ in x0-space at σ̂₀ ──────
+            sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
             _use_jac = (_dyn_jac_interval <= 1) or (_corr_count % _dyn_jac_interval == 0)
-            denoised, _stats = _sure_correct(
-                model, x, sigma, s_in, extra_args,
+            denoised, _stats = _sure_correct_x0(
+                model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                use_jac=_use_jac, _step_tag=_tag,
+                use_jac=_use_jac,
             )
             _corr_count += 1
 
-            _jac_ratio_new = _stats['jac_ratio']
+            _jac_ratio_new = _stats.get('jac_ratio')
             if _jac_ratio_new is not None:
                 _jac_ratio_ema = _jac_ratio_new if _jac_ratio_ema is None else \
                     (1.0 - _EMA_A) * _jac_ratio_ema + _EMA_A * _jac_ratio_new
@@ -1886,6 +1900,154 @@ def sample_dpmpp_3m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
     return x
 
 
+def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
+                               noise_sampler=None, eta=1., s_noise=1.,
+                               sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
+                               sure_preheat_steps=-1, sure_jac_interval=-1):
+    """DPM-Solver++(3M) SDE with SURE trajectory correction.
+
+    Implements Algorithm 1 from arXiv:2512.23232 on top of the 3rd-order multistep
+    SDE solver.  Every step:
+
+      1. x̂₀   = Dθ(xₜ, σₜ)                     — plain denoiser (no_grad)
+      2. σ̂₀   = PCA residual noise estimate       — residual noise in x̂₀
+      3. x̂*₀  = x̂₀ − α·∇SURE(x̂₀, σ̂₀)           — x0-space SURE correction
+      4. ODE update (1st / 2nd / 3rd order)        — deterministic, uses x̂*₀
+      5. Brownian noise injection                   — stochastic reverse process
+
+    The 3rd-order multistep correction blends differences of the last three
+    corrected x̂*₀ estimates (denoised, denoised_1, denoised_2), so the
+    correction propagates naturally through the higher-order history.
+
+    Parameters:
+      eta:               SDE noise weight (1.0 = full SDE, 0.0 = ODE)
+      s_noise:           global noise scale multiplier
+      sure_alpha:        SURE gradient step size
+      sure_n_mc:         Monte Carlo samples for Hutchinson trace
+      sure_eps:          finite-difference epsilon
+      sure_preheat_steps: plain-denoise steps before SURE (-1 = auto 15%)
+      sure_jac_interval: Jacobian every N correction steps (-1 = adaptive)
+    """
+    if len(sigmas) <= 1:
+        return x
+
+    extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=seed, cpu=True) \
+                    if noise_sampler is None else noise_sampler
+    s_in = x.new_ones([x.shape[0]])
+    model_sampling = model.inner_model.model_patcher.get_model_object('model_sampling')
+    lambda_fn = partial(sigma_to_half_log_snr, model_sampling=model_sampling)
+    sigmas = offset_first_sigma_for_snr(sigmas, model_sampling)
+
+    n_steps = len(sigmas) - 1
+    preheat = sure_preheat_steps if sure_preheat_steps >= 0 \
+              else max(2, math.ceil(0.15 * n_steps))
+
+    _dyn_jac_interval: int        = 2 if sure_jac_interval < 1 else sure_jac_interval
+    _jac_ratio_ema:   float | None = None
+    _corr_count: int               = 0
+    _EMA_A = 0.35
+
+    _sure_logger.info(
+        "DPM++3M-SDE-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f",
+        n_steps, preheat, eta, sure_alpha,
+    )
+
+    denoised_1, denoised_2 = None, None
+    h, h_1, h_2 = None, None, None
+
+    for i in trange(n_steps, disable=disable):
+        sigma      = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        _tag       = f" step={i+1}/{n_steps} sigma={float(sigma):.4f}"
+
+        # ── Step 1: plain denoiser call ───────────────────────────────────────
+        with torch.no_grad():
+            x0_hat = model(x, sigma * s_in, **extra_args).detach()
+
+        if i < preheat:
+            # ── Preheat: use plain x̂₀ directly ──────────────────────────────
+            denoised = x0_hat
+            _sure_logger.info("[preheat%s]", _tag)
+        else:
+            # ── Steps 2–3: SURE correction in x0-space at σ̂₀ ────────────────
+            sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
+            _use_jac = (_dyn_jac_interval <= 1) or (_corr_count % _dyn_jac_interval == 0)
+            denoised, _stats = _sure_correct_x0(
+                model, x0_hat, sigma_hat_0, s_in, extra_args,
+                alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
+                use_jac=_use_jac,
+            )
+            _corr_count += 1
+
+            _jac_ratio_new = _stats.get('jac_ratio')
+            if _jac_ratio_new is not None:
+                _jac_ratio_ema = _jac_ratio_new if _jac_ratio_ema is None else \
+                    (1.0 - _EMA_A) * _jac_ratio_ema + _EMA_A * _jac_ratio_new
+            if _jac_ratio_ema is not None and _corr_count >= 3:
+                if _jac_ratio_ema < 0.05 and _dyn_jac_interval < 8:
+                    _dyn_jac_interval += 1
+                    _sure_logger.info("[adapt] jac_interval -> %d  (ratio=%.3f < 0.05)",
+                                      _dyn_jac_interval, _jac_ratio_ema)
+                elif _jac_ratio_ema > 0.25 and _dyn_jac_interval > 1:
+                    _dyn_jac_interval -= 1
+                    _sure_logger.info("[adapt] jac_interval -> %d  (ratio=%.3f > 0.25)",
+                                      _dyn_jac_interval, _jac_ratio_ema)
+            _sure_logger.info("[adapt] jac_ratio_ema=%s  dyn_jac_interval=%d",
+                              f"{_jac_ratio_ema:.3f}" if _jac_ratio_ema is not None else "n/a",
+                              _dyn_jac_interval)
+
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
+
+        # ── Step 4: DPM-Solver++(3M) SDE update ──────────────────────────────
+        if float(sigma_next) == 0:
+            x = denoised
+        else:
+            lambda_s = lambda_fn(sigma)
+            lambda_t = lambda_fn(sigma_next)
+            h = lambda_t - lambda_s
+            h_eta = h * (eta + 1)
+            alpha_t = sigma_next * lambda_t.exp()
+
+            # 1st-order SDE step from SURE-corrected x̂*₀
+            x = sigma_next / sigma * (-h * eta).exp() * x \
+                + alpha_t * (-h_eta).expm1().neg() * denoised
+
+            if h_2 is not None:
+                # 3rd-order multistep correction
+                r0 = h_1 / h
+                r1 = h_2 / h
+                d1_0 = (denoised - denoised_1) / r0
+                d1_1 = (denoised_1 - denoised_2) / r1
+                d1   = d1_0 + (d1_0 - d1_1) * r0 / (r0 + r1)
+                d2   = (d1_0 - d1_1) / (r0 + r1)
+                phi_2 = h_eta.neg().expm1() / h_eta + 1
+                phi_3 = phi_2 / h_eta - 0.5
+                x = x + alpha_t * phi_2 * d1 - alpha_t * phi_3 * d2
+            elif h_1 is not None:
+                # 2nd-order multistep correction (warm-up)
+                r = h_1 / h
+                d = (denoised - denoised_1) / r
+                phi_2 = h_eta.neg().expm1() / h_eta + 1
+                x = x + alpha_t * phi_2 * d
+
+            # ── Step 5: Brownian SDE noise ────────────────────────────────────
+            if eta > 0 and s_noise > 0:
+                x = x + noise_sampler(sigma, sigma_next) \
+                          * sigma_next * (-2 * h * eta).expm1().neg().sqrt() * s_noise
+
+        denoised_1, denoised_2 = denoised, denoised_1
+        h_1, h_2 = h, h_1
+
+    if x.device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    return x
+
+
 def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
                                        extra_args=None, callback=None, disable=None,
                                        noise_sampler=None,
@@ -1968,11 +2130,14 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
                 with torch.no_grad():
                     x0_s = model(x, sigma_s * s_in, **extra_args).detach()
             else:
+                with torch.no_grad():
+                    x0_hat = model(x, sigma_s * s_in, **extra_args).detach()
+                sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
                 _use_jac = (sure_jac_interval <= 1) or (_corr_count % sure_jac_interval == 0)
-                x0_s, _ = _sure_correct(
-                    model, x, sigma_s, s_in, extra_args,
+                x0_s, _ = _sure_correct_x0(
+                    model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                    use_jac=_use_jac, _step_tag=_tag,
+                    use_jac=_use_jac,
                 )
                 _corr_count += 1
 
@@ -4791,96 +4956,75 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
                      alpha=0.05, n_mc=1, eps_mc=1e-3, use_jac=True):
     """SURE gradient correction per Algorithm 1 of arXiv:2512.23232.
 
-    Exactly implements the paper's MC-SURE step:
+    Two no-grad forward passes implement the MC-SURE step without backward:
 
       ε       = max(|xnoisy|) / 1000   (paper §2.4 recommended choice)
       x̂      = Dθ(xnoisy, σ̂₀)
-      tr{J}  ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) · ε^{-1}
-                averaged over n_mc draws of b ~ N(0, I)
-      SURE   = −n·σ̂₀² + ‖xnoisy − x̂‖² + 2·σ̂₀²·tr{J}
-      x0_corrected = x0_hat − α · ∇_{xnoisy} SURE
+      tr{J}  ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) · ε^{-1}   [scalar, n_mc averaged]
+      SURE   = −n·σ̂₀² + ‖xnoisy − x̂‖² + 2·σ̂₀²·tr{J}             [logged only]
 
-    Gradient is computed via autograd through both Dθ calls from the same
-    xnoisy leaf.  Falls back to the residual-only gradient (2·residual,
-    stop-grad on x̂) when autograd is unavailable (inference_mode).
+    Gradient (stop-gradient on x̂):
+      ∇SURE ≈ 2·(xnoisy − x̂)
+
+    The full ∇SURE also has a 2σ̂₀²·J_D^T b/ε Jacobian term, but computing
+    it requires backward through the UNet — far too much VRAM for large models.
+    Per §5 of the paper, a "Monte Carlo trace estimator that avoids explicit
+    Jacobians" is the intended deployment strategy.  The Jacobian gradient
+    contribution is O(σ̂₀²) and small when σ̂₀ is the small residual noise.
     """
     # ε: paper says max_pixel / 1000; clamp to eps_mc for numerical safety
     eps = max(float(x0_hat.abs().max().item()) / 1000.0, float(eps_mc))
 
     sigma_t = torch.tensor(sigma_hat_0, device=x0_hat.device, dtype=x0_hat.dtype)
-    # max(ε, σ̂₀) — Algorithm 1 uses this for the perturbed denoiser call
+    # max(ε, σ̂₀) — Algorithm 1 floors the perturbed denoiser sigma here
     sigma_p = torch.tensor(max(eps, sigma_hat_0), device=x0_hat.device, dtype=x0_hat.dtype)
     sigma2  = float(sigma_t ** 2)
+    n       = x0_hat.numel()
 
-    # Autograd availability probe (torch.inference_mode blocks enable_grad)
-    try:
-        with torch.enable_grad():
-            _probe = torch.tensor(1.0, requires_grad=True) * 2
-        _grad_ok = bool(_probe.requires_grad)
-    except Exception:
-        _grad_ok = False
+    with torch.no_grad():
+        # Pass 1: x̂ = Dθ(xnoisy, σ̂₀)
+        x_hat    = model(x0_hat.detach(), sigma_t * s_in, **extra_args).detach()
+        residual = x0_hat - x_hat   # xnoisy − x̂
 
-    # Use eager (un-compiled) model to avoid CUDA-graph / autograd conflicts
-    eager = getattr(model, '_orig_mod', model)
+        # Pass 2 (optional): Dθ(xnoisy + ε·b, max(ε, σ̂₀)) for tr{J} scalar
+        jac_trace = None
+        sure_val  = float(-n * sigma2 + (residual ** 2).sum())
+        if use_jac:
+            b         = torch.randn_like(x0_hat)
+            x_pert_hat = model(
+                (x0_hat + eps * b).detach(), sigma_p * s_in, **extra_args,
+            ).detach()
+            # Average over n_mc by repeating b draws (batched into one call if n_mc > 1)
+            jac_trace = float((b * (x_pert_hat - x_hat)).sum()) / eps
+            if n_mc > 1:
+                for _ in range(n_mc - 1):
+                    b2         = torch.randn_like(x0_hat)
+                    x_pert2    = model(
+                        (x0_hat + eps * b2).detach(), sigma_p * s_in, **extra_args,
+                    ).detach()
+                    jac_trace += float((b2 * (x_pert2 - x_hat)).sum()) / eps
+                jac_trace /= n_mc
+            sure_val += 2.0 * sigma2 * jac_trace
 
-    if _grad_ok and use_jac:
-        if x0_hat.device.type == "cuda":
-            torch.cuda.empty_cache()
-        xnoisy = x0_hat.detach().requires_grad_(True)
-        try:
-            with torch.enable_grad():
-                # x̂ = Dθ(xnoisy, σ̂₀) — grad flows from here
-                x_hat = eager(xnoisy, sigma_t * s_in, **extra_args)
+    # ∇SURE ≈ 2·(xnoisy − x̂)  [residual gradient; stop-grad on x̂]
+    grad   = 2.0 * residual
+    x0_std = x0_hat.std().item()
+    gs     = grad.std().item()
+    if gs > x0_std > 0.0:
+        grad = grad * (x0_std / gs)
+    grad = grad.clamp(-3.0 * x0_std, 3.0 * x0_std)
 
-                # ‖xnoisy − x̂‖²
-                residual_sq = ((xnoisy - x_hat) ** 2).sum()
+    x0_corrected = (x0_hat - alpha * grad).detach()
 
-                # MC Jacobian trace (averaged over n_mc samples)
-                # tr{J} ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) / ε
-                # x_hat detached as anchor so its grad doesn't double-count
-                jac_acc = torch.zeros(1, device=x0_hat.device, dtype=x0_hat.dtype)
-                for _ in range(n_mc):
-                    b = torch.randn_like(xnoisy)
-                    x_pert_hat = eager(xnoisy + eps * b, sigma_p * s_in, **extra_args)
-                    jac_acc = jac_acc + (b * (x_pert_hat - x_hat.detach())).sum() / eps
-                jac_trace_val = float(jac_acc.item()) / n_mc
-
-                # SURE scalar (constant −nσ̂₀² contributes zero to gradient)
-                sure_scalar = residual_sq + 2.0 * sigma2 * (jac_acc / n_mc)
-                (grad,) = torch.autograd.grad(sure_scalar, xnoisy)
-
-            x0_corrected = (x0_hat - alpha * grad.detach()).detach()
-            _sure_logger.info(
-                "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  "
-                "sure=%.4f  jac_trace=%.4f  grad_rms=%.5f",
-                eps, sigma_hat_0, float(sigma_p),
-                float(sure_scalar), jac_trace_val,
-                float((grad ** 2).mean() ** 0.5),
-            )
-        except Exception as exc:
-            _sure_logger.warning("[sure_x0] autograd path failed (%s) — residual fallback", exc)
-            with torch.no_grad():
-                x_hat_fb = model(x0_hat.detach(), sigma_t * s_in, **extra_args).detach()
-            grad = 2.0 * (x0_hat - x_hat_fb)
-            x0_std = x0_hat.std().item()
-            gs = grad.std().item()
-            if gs > x0_std > 0:
-                grad = grad * (x0_std / gs)
-            x0_corrected = (x0_hat - alpha * grad.clamp(-3 * x0_std, 3 * x0_std)).detach()
-    else:
-        # Residual-only fallback: ∇SURE ≈ 2·(xnoisy − x̂)  (stop-grad on x̂)
-        with torch.no_grad():
-            x_hat = model(x0_hat.detach(), sigma_t * s_in, **extra_args).detach()
-        grad = 2.0 * (x0_hat - x_hat)
-        x0_std = x0_hat.std().item()
-        gs = grad.std().item()
-        if gs > x0_std > 0:
-            grad = grad * (x0_std / gs)
-        x0_corrected = (x0_hat - alpha * grad.clamp(-3 * x0_std, 3 * x0_std)).detach()
-        _sure_logger.info(
-            "[sure_x0] residual-only (no autograd)  eps=%.5f  sigma_hat_0=%.5f",
-            eps, sigma_hat_0,
-        )
+    _sure_logger.info(
+        "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  "
+        "sure=%.4f  jac_trace=%s  residual_rms=%.5f  grad_rms=%.5f",
+        eps, sigma_hat_0, float(sigma_p),
+        sure_val,
+        f"{jac_trace:.4f}" if jac_trace is not None else "n/a",
+        float((residual ** 2).mean() ** 0.5),
+        float((grad ** 2).mean() ** 0.5),
+    )
 
     return x0_corrected, {'jac_ratio': None}
 
@@ -5007,8 +5151,16 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
       sure_preheat_frac: fraction of t-range to run without correction (default 0.3)
       sure_jac_interval: run full Jacobian every N correction steps (default 2)
     """
-    if sigma_min <= 0 or sigma_max <= 0:
-        raise ValueError('sigma_min and sigma_max must not be 0')
+    if sigma_max <= 0:
+        raise ValueError('sigma_max must be > 0')
+    # sigma_min=0 is valid for zero-SNR models (e.g. Illustrious).
+    # Log-space integration requires sigma > 0, so clamp to a small floor.
+    _sigma_min_log = max(float(sigma_min), 1e-6)
+    if sigma_min <= 0:
+        _sure_logger.warning(
+            "SURE-Adaptive: sigma_min=0 (zero-SNR model) — clamping "
+            "log-space endpoint to 1e-6; final denoised output is unaffected"
+        )
 
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
@@ -5018,8 +5170,8 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
     sigma_fn = lambda t: t.neg().exp()
     t_fn     = lambda sigma: sigma.log().neg()
 
-    t_start = t_fn(torch.tensor(sigma_max, dtype=x.dtype, device=x.device))
-    t_end   = t_fn(torch.tensor(sigma_min, dtype=x.dtype, device=x.device))
+    t_start = t_fn(torch.tensor(sigma_max,      dtype=x.dtype, device=x.device))
+    t_end   = t_fn(torch.tensor(_sigma_min_log, dtype=x.dtype, device=x.device))
     t_preheat = t_start + sure_preheat_frac * (t_end - t_start)
 
     pid    = PIDStepSizeController(h_init, pcoeff, icoeff, dcoeff, order=2, accept_safety=accept_safety)
@@ -5052,11 +5204,14 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
                 with torch.no_grad():
                     x0_s = model(x, sigma_s * s_in, **extra_args).detach()
             else:
+                with torch.no_grad():
+                    x0_hat = model(x, sigma_s * s_in, **extra_args).detach()
+                sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
                 _use_jac = (sure_jac_interval <= 1) or (_corr_count % sure_jac_interval == 0)
-                x0_s, _ = _sure_correct(
-                    model, x, sigma_s, s_in, extra_args,
+                x0_s, _ = _sure_correct_x0(
+                    model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
-                    use_jac=_use_jac, _step_tag=_tag,
+                    use_jac=_use_jac,
                 )
                 _corr_count += 1
 

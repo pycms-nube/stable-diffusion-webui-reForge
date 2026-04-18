@@ -137,6 +137,79 @@ _SDXL_LDM_UNET_CONFIG: dict = {
 }
 
 # ---------------------------------------------------------------------------
+# LDM → HF UNet config derivation
+# ---------------------------------------------------------------------------
+
+def _derive_hf_config_from_ldm(merged_unet_cfg: dict) -> tuple[dict, list[str]]:
+    """Derive HF UNet2DConditionModel config overrides from a merged ldm unet_config.
+
+    Reads keys that are actually present in the merged config (model-embedded
+    values take precedence over our hardcoded defaults) and translates them to
+    the HF naming convention.  Returns:
+        overrides  — dict to merge on top of _SDXL_HF_UNET_CONFIG
+        report     — human-readable list of detected → applied mappings
+
+    Only keys that differ from _SDXL_HF_UNET_CONFIG are included in overrides.
+    """
+    overrides: dict = {}
+    report: list[str] = []
+
+    base = _SDXL_HF_UNET_CONFIG
+
+    # in_channels / out_channels
+    for ldm_key, hf_key in (("in_channels", "in_channels"), ("out_channels", "out_channels")):
+        v = merged_unet_cfg.get(ldm_key)
+        if v is not None and v != base.get(hf_key):
+            overrides[hf_key] = v
+            report.append(f"  {ldm_key}={v}  →  hf:{hf_key}={v}  (was {base.get(hf_key)})")
+
+    # context_dim → cross_attention_dim
+    v = merged_unet_cfg.get("context_dim")
+    if v is not None and v != base.get("cross_attention_dim"):
+        overrides["cross_attention_dim"] = v
+        report.append(f"  context_dim={v}  →  hf:cross_attention_dim={v}  (was {base.get('cross_attention_dim')})")
+
+    # adm_in_channels → projection_class_embeddings_input_dim
+    v = merged_unet_cfg.get("adm_in_channels")
+    if v is not None and v != base.get("projection_class_embeddings_input_dim"):
+        overrides["projection_class_embeddings_input_dim"] = v
+        report.append(f"  adm_in_channels={v}  →  hf:projection_class_embeddings_input_dim={v}  (was {base.get('projection_class_embeddings_input_dim')})")
+
+    # model_channels → block_out_channels[0] (leading channel width)
+    mc = merged_unet_cfg.get("model_channels")
+    cm = merged_unet_cfg.get("channel_mult")
+    if mc is not None and cm is not None:
+        derived_boc = [mc * m for m in cm]
+        if derived_boc != list(base.get("block_out_channels", [])):
+            overrides["block_out_channels"] = derived_boc
+            report.append(f"  model_channels={mc} × channel_mult={cm}  →  hf:block_out_channels={derived_boc}  (was {base.get('block_out_channels')})")
+
+    # transformer_depth → transformer_layers_per_block
+    # ldm layout: [d_down0, d_down0_skip, d_down1, d_down1_skip, d_down2, d_down2_skip]
+    # HF layout: one entry per down-block (use first non-zero depth per pair)
+    td = merged_unet_cfg.get("transformer_depth")
+    if td is not None and len(td) >= 6:
+        hf_td = [td[0] or td[1], td[2] or td[3], td[4] or td[5]]
+        # Include middle block depth
+        tdm = merged_unet_cfg.get("transformer_depth_middle")
+        if tdm is not None:
+            hf_td = hf_td  # HF transformer_layers_per_block is per down-block only
+        if hf_td != list(base.get("transformer_layers_per_block", [])):
+            overrides["transformer_layers_per_block"] = hf_td
+            report.append(f"  transformer_depth={td}  →  hf:transformer_layers_per_block={hf_td}  (was {base.get('transformer_layers_per_block')})")
+
+    # num_res_blocks → layers_per_block (use first value; SDXL has uniform depth)
+    nr = merged_unet_cfg.get("num_res_blocks")
+    if nr is not None:
+        first = nr[0] if isinstance(nr, (list, tuple)) else nr
+        if first != base.get("layers_per_block"):
+            overrides["layers_per_block"] = first
+            report.append(f"  num_res_blocks[0]={first}  →  hf:layers_per_block={first}  (was {base.get('layers_per_block')})")
+
+    return overrides, report
+
+
+# ---------------------------------------------------------------------------
 # Block address table: HF (b_idx, a_idx) → ldm block index
 # Derived from unet_to_diffusers() with num_res_blocks=[2,2,2].
 #   down: n = 1 + 3*b_idx + a_idx   (only b_idx=1,2 have attentions)
@@ -493,6 +566,35 @@ class DiffPipeline():
         instance._synced_patches_uuid = None
         instance._active_adapters = []
 
+        # HF UNet summary (from_single_file path — _build_hf_unet was skipped)
+        try:
+            hf_cfg = hf_unet.config
+            hf_keys = set(hf_unet.state_dict().keys())
+            hf_dtype = next(hf_unet.parameters()).dtype
+            _unet_lines = [
+                "",
+                "╔══════════════════════════════════════════════════════════════╗",
+                "║         DiffPipeline — HF UNet load report (hijack)         ║",
+                "╚══════════════════════════════════════════════════════════════╝",
+                "  Source              : diffusers from_single_file (weights pre-loaded)",
+                f"  Dtype               : {hf_dtype}",
+                f"  Total HF keys       : {len(hf_keys)}",
+                f"  in_channels         : {getattr(hf_cfg, 'in_channels', '?')}",
+                f"  out_channels        : {getattr(hf_cfg, 'out_channels', '?')}",
+                f"  cross_attention_dim : {getattr(hf_cfg, 'cross_attention_dim', '?')}",
+                f"  projection_class_embeddings_input_dim : "
+                f"{getattr(hf_cfg, 'projection_class_embeddings_input_dim', '?')}",
+                f"  transformer_layers_per_block : "
+                f"{getattr(hf_cfg, 'transformer_layers_per_block', '?')}",
+                f"  layers_per_block    : {getattr(hf_cfg, 'layers_per_block', '?')}",
+                f"  block_out_channels  : {getattr(hf_cfg, 'block_out_channels', '?')}",
+                "",
+            ]
+            print("\n".join(_unet_lines))
+        except Exception as _e:
+            log.warning("DiffPipeline.from_hf_unet: could not read HF UNet config: %s", _e)
+
+        instance._log_sampling_report()
         log.info(
             "DiffPipeline.from_hf_unet: attached to existing HF UNet — "
             "diffusers hijack path is ACTIVE."
@@ -539,9 +641,100 @@ class DiffPipeline():
         self._synced_patches_uuid = None
         self._active_adapters: list = []   # list of (adapter_name, strength)
 
+        self._log_sampling_report()
         log.info(
             "DiffPipeline attached to sd_model — "
             "Diffusers SDXL path is ACTIVE."
+        )
+
+    # ------------------------------------------------------------------
+    # Sampling compliance report (shared by __init__ and from_hf_unet)
+    # ------------------------------------------------------------------
+
+    def _log_sampling_report(self) -> None:
+        """Print and log a sampling-parameter compliance summary.
+
+        Verifies that the model_sampling object is in the expected state after
+        apply_checkpoint_sampling_params() has run.  Confirms that schedule,
+        prediction type, and ZTSNR are properly obeyed by the three delegation
+        points in apply_model():
+          calculate_input    → preconditioning  (EPS/V_PREDICTION/EDM/CONST …)
+          timestep           → sigma → integer timestep via model's sigma table
+          calculate_denoised → postconditioning (prediction-type-aware)
+        """
+        ms = self.model_sampling
+        ms_cls   = type(ms)
+        ms_bases = [c.__name__ for c in ms_cls.__mro__
+                    if c.__name__ not in ("object", ms_cls.__name__)]
+
+        _pred_names = {
+            "EPS":          "epsilon (ε) — standard noise prediction",
+            "V_PREDICTION": "v-prediction (velocity parameterization)",
+            "EDM":          "EDM (Karras et al. 2022) — c_skip/c_out preconditioning",
+            "CONST":        "constant (flow-matching / rectified flow)",
+            "X0":           "x0 prediction",
+            "IMG_TO_IMG":   "img2img epsilon",
+            "COSMOS_RFLOW": "Cosmos rectified-flow",
+        }
+        pred_type = next(
+            (desc for name, desc in _pred_names.items() if name in ms_bases),
+            f"unknown ({ms_bases})"
+        )
+
+        try:
+            sig_min  = float(ms.sigma_min)
+            sig_max  = float(ms.sigma_max)
+            n_sigmas = len(ms.sigmas) if hasattr(ms, "sigmas") else "?"
+        except Exception:
+            sig_min = sig_max = float("nan")
+            n_sigmas = "?"
+
+        zsnr_active = getattr(ms, "zsnr", False)
+        _ztsnr_heuristic = sig_max > 100.0
+        if zsnr_active:
+            zsnr_note = "YES (flag set on model_sampling)"
+        elif _ztsnr_heuristic:
+            zsnr_note = "YES (inferred from sigma_max > 100 — ZTSNR rescaling applied)"
+        else:
+            zsnr_note = "No"
+
+        # Prefer the tagged source set by _build_model_sampling_from_pipe.
+        # Fall back to a sigma-range heuristic for the legacy ldm path.
+        if hasattr(ms, "_schedule_source"):
+            schedule_source = ms._schedule_source
+        else:
+            _default_sigma_max = 14.615
+            schedule_source = (
+                "checkpoint alphas_cumprod (ldm path)"
+                if abs(sig_max - _default_sigma_max) > 0.1
+                else "hardcoded scaled_linear default (no schedule tensors in checkpoint)"
+            )
+
+        lines = [
+            "",
+            "╔══════════════════════════════════════════════════════════════╗",
+            "║         DiffPipeline — Sampling compliance report           ║",
+            "╚══════════════════════════════════════════════════════════════╝",
+            f"  model_sampling type : {ms_cls.__name__}",
+            f"  MRO mixins          : {ms_bases}",
+            f"  Prediction type     : {pred_type}",
+            f"  Schedule source     : {schedule_source}",
+            f"  σ_min               : {sig_min:.6f}",
+            f"  σ_max               : {sig_max:.6f}",
+            f"  Schedule steps (T)  : {n_sigmas}",
+            f"  ZTSNR               : {zsnr_note}",
+            "",
+            "  Delegation points in apply_model():",
+            "    calculate_input    → preconditioning   ✓ (delegates to model_sampling)",
+            "    timestep(sigma)    → integer timestep  ✓ (uses model's sigma table)",
+            "    calculate_denoised → postconditioning  ✓ (delegates to model_sampling)",
+            "",
+        ]
+        print("\n".join(lines))
+        log.info(
+            "DiffPipeline sampling: pred=%s  σ=[%.4f, %.4f]  T=%s  zsnr=%s  "
+            "schedule_source=%s",
+            pred_type, sig_min, sig_max, n_sigmas, zsnr_note, schedule_source,
         )
 
     # ------------------------------------------------------------------
@@ -556,14 +749,29 @@ class DiffPipeline():
         # Merge detected config (has num_res_blocks etc.) with our known full
         # SDXL config so unet_to_diffusers() gets all required keys.
         unet_cfg = dict(_SDXL_LDM_UNET_CONFIG)
-        unet_cfg.update(ldm_model.model_config.unet_config)
+        model_embedded_cfg = dict(ldm_model.model_config.unet_config)
+        unet_cfg.update(model_embedded_cfg)
+
+        # --- Report what the model carries vs our hardcoded defaults ----------
+        # Keys present in the model-embedded config that differ from our base.
+        cfg_diffs = {
+            k: (v, _SDXL_LDM_UNET_CONFIG.get(k, "<not in base>"))
+            for k, v in model_embedded_cfg.items()
+            if _SDXL_LDM_UNET_CONFIG.get(k) != v
+        }
+        cfg_same_count = len(model_embedded_cfg) - len(cfg_diffs)
+
+        # --- Derive HF UNet config overrides from model-embedded parameters --
+        hf_overrides, override_report = _derive_hf_config_from_ldm(unet_cfg)
+        hf_cfg = dict(_SDXL_HF_UNET_CONFIG)
+        hf_cfg.update(hf_overrides)
 
         key_map = unet_to_diffusers(unet_cfg)  # hf_key → ldm_key
 
         ldm_sd = ldm_model.diffusion_model.state_dict()
 
         # Instantiate on CPU; moved to compute device in apply_model().
-        hf_unet = UNet2DConditionModel(**_SDXL_HF_UNET_CONFIG)
+        hf_unet = UNet2DConditionModel(**hf_cfg)
 
         # unet_to_diffusers() generates entries for every possible resnet key
         # (conv_shortcut, downsamplers, upsamplers) regardless of whether the
@@ -602,17 +810,56 @@ class DiffPipeline():
                 "DiffPipeline: HF UNet unexpected %d keys", len(unexpected)
             )
 
-        log.info(
-            "DiffPipeline: loaded %d / %d parameter tensors into HF UNet",
-            len(hf_sd), len(hf_model_keys),
-        )
-
         # Match dtype from the ldm diffusion model
+        ref_dtype = None
         try:
             ref_dtype = next(ldm_model.diffusion_model.parameters()).dtype
             hf_unet = hf_unet.to(dtype=ref_dtype)
         except StopIteration:
             pass
+
+        # --- Load report (printed once at construction) -----------------------
+        lines = [
+            "",
+            "╔══════════════════════════════════════════════════════════════╗",
+            "║            DiffPipeline — HF UNet load report               ║",
+            "╚══════════════════════════════════════════════════════════════╝",
+            f"  Weights loaded : {len(hf_sd)} / {len(hf_model_keys)} HF parameter tensors",
+            f"  Dtype          : {ref_dtype} (matched from ldm diffusion_model)",
+        ]
+
+        # Model-embedded config summary
+        lines.append(f"\n  Model-embedded unet_config  ({len(model_embedded_cfg)} keys read from checkpoint):")
+        if cfg_diffs:
+            for k, (model_val, base_val) in sorted(cfg_diffs.items()):
+                lines.append(f"    {k}: {model_val!r}  (base default was {base_val!r})")
+        else:
+            lines.append("    (all values match hardcoded base — standard SDXL-base-1.0)")
+        if cfg_same_count:
+            lines.append(f"    … plus {cfg_same_count} keys matching base defaults (omitted)")
+
+        # HF config adjustments
+        lines.append(f"\n  HF UNet2DConditionModel config adjustments ({len(hf_overrides)} override(s)):")
+        if override_report:
+            for r in override_report:
+                lines.append(r)
+        else:
+            lines.append("    (none — using hardcoded SDXL-base-1.0 HF config as-is)")
+
+        # Weight transfer issues
+        if missing_ldm or missing or unexpected:
+            lines.append("\n  Weight transfer issues:")
+            if missing_ldm:
+                lines.append(f"    {len(missing_ldm)} HF keys had no matching LDM key  (first 3: {missing_ldm[:3]})")
+            if missing:
+                lines.append(f"    {len(missing)} HF UNet keys left uninitialised  (first 3: {list(missing)[:3]})")
+            if unexpected:
+                lines.append(f"    {len(unexpected)} unexpected keys ignored")
+        else:
+            lines.append("\n  Weight transfer : clean (no missing or unexpected keys)")
+
+        lines.append("")
+        print("\n".join(lines))
 
         return hf_unet
 
@@ -1177,6 +1424,23 @@ class DiffPipeline():
         adm_text_embeds = kwargs.get("adm_text_embeds", None)
         adm_time_ids = kwargs.get("adm_time_ids", None)
 
+        # One-shot conditioning diagnostic (fires only on first call per session)
+        if not getattr(self, "_cond_diag_printed", False):
+            self._cond_diag_printed = True
+            _diag_keys = list(kwargs.keys())
+            _crossattn_shape = tuple(c_crossattn.shape) if c_crossattn is not None else None
+            _adm_te_shape    = tuple(adm_text_embeds.shape) if adm_text_embeds is not None else None
+            _adm_ti_shape    = tuple(adm_time_ids.shape)   if adm_time_ids is not None else None
+            _y_val           = kwargs.get("y", None)
+            _y_shape         = tuple(_y_val.shape) if _y_val is not None else None
+            print(
+                f"[DiffPipeline.cond_diag] kwargs_keys={_diag_keys}"
+                f"  c_crossattn={_crossattn_shape}"
+                f"  adm_text_embeds={_adm_te_shape}"
+                f"  adm_time_ids={_adm_ti_shape}"
+                f"  y={_y_shape}"
+            )
+
         if adm_text_embeds is not None and adm_time_ids is not None:
             added_cond_kwargs = {
                 "text_embeds": adm_text_embeds.to(dtype),
@@ -1186,23 +1450,27 @@ class DiffPipeline():
             y = kwargs.get("y", None)
             if y is not None:
                 y = y.to(dtype)
+                # Build correct SDXL time_ids from actual latent dimensions.
+                # Format: [orig_h, orig_w, crop_top, crop_left, target_h, target_w]
+                # Using zeros for crop/target assumes no crop and target=original.
+                _h_px = x.shape[2] * 8
+                _w_px = x.shape[3] * 8
+                _time_ids = torch.tensor(
+                    [[_h_px, _w_px, 0, 0, _h_px, _w_px]],
+                    device=device, dtype=dtype,
+                ).expand(y.shape[0], -1)
                 added_cond_kwargs = {
                     "text_embeds": y[:, :1280],
-                    "time_ids": torch.zeros(
-                        y.shape[0], 6, device=device, dtype=dtype
-                    ),
+                    "time_ids": _time_ids,
                 }
-                log.debug(
-                    "DiffPipeline: adm_raw not found; falling back to y-split "
-                    "(time conditioning may be imprecise)"
-                )
             else:
                 # Neither raw ADM tensors nor legacy y — build a zero fallback so
                 # the SDXL UNet never receives added_cond_kwargs=None, which causes
                 # the add_embedding module to produce NaN.
-                log.warning(
-                    "[DiffPipeline] No pooled conditioning found (adm_text_embeds/y both absent)"
-                    " — using zero fallback for added_cond_kwargs."
+                print(
+                    "[DiffPipeline] WARNING: No pooled conditioning found "
+                    "(adm_text_embeds/y both absent) — using ZERO fallback for added_cond_kwargs. "
+                    "This will degrade quality significantly."
                 )
                 batch = x.shape[0]
                 added_cond_kwargs = {

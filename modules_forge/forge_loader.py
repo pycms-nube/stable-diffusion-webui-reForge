@@ -556,7 +556,18 @@ def load_model_for_a1111(timer, checkpoint_info=None, state_dict=None):
 
     @torch.inference_mode()
     def patched_decode_first_stage(x):
-        sample = sd_model.forge_objects.unet.model.model_config.latent_format.process_out(x)
+        lf = sd_model.forge_objects.unet.model.model_config.latent_format
+        print(
+            f"[forge_loader.decode] latent_format={type(lf).__name__}"
+            f"  scale_factor={getattr(lf, 'scale_factor', 'n/a')}"
+            f"  x.shape={tuple(x.shape)}  x.dtype={x.dtype}"
+            f"  x_min={float(x.min()):.4f}  x_max={float(x.max()):.4f}"
+        )
+        sample = lf.process_out(x)
+        print(
+            f"[forge_loader.decode] after process_out:"
+            f"  sample_min={float(sample.min()):.4f}  sample_max={float(sample.max()):.4f}"
+        )
         sample = sd_model.forge_objects.vae.decode(sample).movedim(-1, 1) * 2.0 - 1.0
         return sample.to(x)
 

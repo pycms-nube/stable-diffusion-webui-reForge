@@ -519,10 +519,55 @@ def _build_model_sampling_from_pipe(diffusers_unet, scheduler=None):
     # producing correct MRO (ModelSamplingDiscrete → pred_class).
     _DynSampling = type("_DynSampling", (ModelSamplingDiscrete, pred_class), {})
     instance = _DynSampling(model_config=_SamplingCfg())
+
+    # --- 4. Override sigmas from scheduler.alphas_cumprod if available ------
+    # The scheduler's alphas_cumprod is recomputed in float32 from the config
+    # beta_start/beta_end — this is more accurate than any raw checkpoint tensors
+    # which are often stored as BF16.
+    #
+    # BF16 storage problem (MODEL_META.md §BF16 / A1111 #14071):
+    #   alphas_cumprod[0] stored as BF16 rounds to 1.0 exactly.
+    #   This gives sigma_min = sqrt((1-1)/1) = 0 — catastrophically wrong.
+    #   The float32 scheduler recomputation is immune to this.
+    #
+    # Note: if scheduler.alphas_cumprod is identical to what _register_schedule
+    # already computed (most cases), this is a no-op — but it makes the schedule
+    # source explicit and handles any case where the scheduler was configured with
+    # non-default beta parameters.
+    schedule_source = f"scheduler config (beta_start={linear_start}, beta_end={linear_end}, T={timesteps})"
+    if scheduler is not None:
+        sched_ac = getattr(scheduler, "alphas_cumprod", None)
+        if sched_ac is not None:
+            try:
+                ac32 = sched_ac.float()
+                sigmas = ((1.0 - ac32) / ac32.clamp(min=1e-10)) ** 0.5
+                ztsnr_from_ac = bool(ac32[-1].item() < 1e-5)
+                if ztsnr_from_ac and not zsnr:
+                    # scheduler.alphas_cumprod encodes ZTSNR even though
+                    # rescale_betas_zero_snr was not set — stamp the flag.
+                    zsnr = True
+                    instance.zsnr = True
+                    print(
+                        f"[DiffusersModelAdapter] ZTSNR detected from scheduler.alphas_cumprod[-1]"
+                        f"={ac32[-1].item():.2e} — stamping zsnr=True"
+                    )
+                instance.set_sigmas(sigmas)
+                schedule_source = (
+                    f"scheduler.alphas_cumprod (float32, T={len(ac32)}, "
+                    f"σ_min={sigmas[0].item():.4f}, σ_max={sigmas[-1].item():.4f}"
+                    f"{', ZTSNR' if ztsnr_from_ac else ''})"
+                )
+            except Exception as _e:
+                schedule_source += f"  [alphas_cumprod override failed: {_e}]"
+
+    # Tag the instance so _log_sampling_report can display the true source.
+    instance._schedule_source = schedule_source  # type: ignore[attr-defined]
+
     print(
         f"[DiffusersModelAdapter] model_sampling: prediction={prediction_type} "
         f"schedule={beta_schedule} linear_start={linear_start} "
-        f"linear_end={linear_end} timesteps={timesteps} zsnr={zsnr}"
+        f"linear_end={linear_end} timesteps={timesteps} zsnr={zsnr}  "
+        f"schedule_source={schedule_source}"
     )
     return instance
 
