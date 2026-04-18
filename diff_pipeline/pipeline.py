@@ -1418,65 +1418,43 @@ class DiffPipeline():
         # --- 3. Conditioning bridge ---
         encoder_hidden_states = c_crossattn  # (B, seq, 2048)
 
-        # Use raw ADM components emitted by SDXL.extra_conds() if available.
-        # Fallback: split y (2816-dim Fourier-embedded) — text_embeds correct,
-        # time_ids will be wrong (already Fourier-embedded), but still usable.
+        # Resolve text_embeds (1280-dim CLIP-G pooled output):
+        #   Priority 1 — adm_text_embeds: set by SDXL.extra_conds() (ldm non-hijack path)
+        #                 or by cond_from_a1111_to_patched_ldm (hijack path, after fix).
+        #   Priority 2 — y: raw pooled output stored as model_conds["y"] by
+        #                 cond_from_a1111_to_patched_ldm (shape B×1280 in diffusers path,
+        #                 shape B×2816 Fourier-embedded in pure ldm path — take [:1280]).
+        #   Fallback    — zeros: warns loudly; causes visible quality degradation.
         adm_text_embeds = kwargs.get("adm_text_embeds", None)
-        adm_time_ids = kwargs.get("adm_time_ids", None)
+        adm_time_ids    = kwargs.get("adm_time_ids", None)
+        y               = kwargs.get("y", None)
 
-        # One-shot conditioning diagnostic (fires only on first call per session)
-        if not getattr(self, "_cond_diag_printed", False):
-            self._cond_diag_printed = True
-            _diag_keys = list(kwargs.keys())
-            _crossattn_shape = tuple(c_crossattn.shape) if c_crossattn is not None else None
-            _adm_te_shape    = tuple(adm_text_embeds.shape) if adm_text_embeds is not None else None
-            _adm_ti_shape    = tuple(adm_time_ids.shape)   if adm_time_ids is not None else None
-            _y_val           = kwargs.get("y", None)
-            _y_shape         = tuple(_y_val.shape) if _y_val is not None else None
-            print(
-                f"[DiffPipeline.cond_diag] kwargs_keys={_diag_keys}"
-                f"  c_crossattn={_crossattn_shape}"
-                f"  adm_text_embeds={_adm_te_shape}"
-                f"  adm_time_ids={_adm_ti_shape}"
-                f"  y={_y_shape}"
-            )
-
-        if adm_text_embeds is not None and adm_time_ids is not None:
-            added_cond_kwargs = {
-                "text_embeds": adm_text_embeds.to(dtype),
-                "time_ids": adm_time_ids.to(dtype),
-            }
+        if adm_text_embeds is not None:
+            text_embeds = adm_text_embeds.to(dtype)
+        elif y is not None:
+            text_embeds = y[:, :1280].to(dtype)
         else:
-            y = kwargs.get("y", None)
-            if y is not None:
-                y = y.to(dtype)
-                # Build correct SDXL time_ids from actual latent dimensions.
-                # Format: [orig_h, orig_w, crop_top, crop_left, target_h, target_w]
-                # Using zeros for crop/target assumes no crop and target=original.
-                _h_px = x.shape[2] * 8
-                _w_px = x.shape[3] * 8
-                _time_ids = torch.tensor(
-                    [[_h_px, _w_px, 0, 0, _h_px, _w_px]],
-                    device=device, dtype=dtype,
-                ).expand(y.shape[0], -1)
-                added_cond_kwargs = {
-                    "text_embeds": y[:, :1280],
-                    "time_ids": _time_ids,
-                }
-            else:
-                # Neither raw ADM tensors nor legacy y — build a zero fallback so
-                # the SDXL UNet never receives added_cond_kwargs=None, which causes
-                # the add_embedding module to produce NaN.
-                print(
-                    "[DiffPipeline] WARNING: No pooled conditioning found "
-                    "(adm_text_embeds/y both absent) — using ZERO fallback for added_cond_kwargs. "
-                    "This will degrade quality significantly."
-                )
-                batch = x.shape[0]
-                added_cond_kwargs = {
-                    "text_embeds": torch.zeros(batch, 1280, device=device, dtype=dtype),
-                    "time_ids":    torch.zeros(batch,    6, device=device, dtype=dtype),
-                }
+            log.warning(
+                "[DiffPipeline] No pooled conditioning found "
+                "(adm_text_embeds/y both absent) — using zero fallback. "
+                "Quality will be significantly degraded."
+            )
+            text_embeds = torch.zeros(x.shape[0], 1280, device=device, dtype=dtype)
+
+        # Resolve time_ids ([orig_h, orig_w, crop_top, crop_left, target_h, target_w]):
+        #   Priority 1 — adm_time_ids: set by SDXL.extra_conds() (ldm non-hijack path).
+        #   Priority 2 — derive from latent shape; correct for standard (uncropped) generation.
+        if adm_time_ids is not None:
+            time_ids = adm_time_ids.to(dtype)
+        else:
+            _h_px = x.shape[2] * 8
+            _w_px = x.shape[3] * 8
+            time_ids = torch.tensor(
+                [[_h_px, _w_px, 0, 0, _h_px, _w_px]],
+                device=device, dtype=dtype,
+            ).expand(text_embeds.shape[0], -1)
+
+        added_cond_kwargs = {"text_embeds": text_embeds, "time_ids": time_ids}
 
         # --- 4. ControlNet residual mapping ---
         # ldm: control["input"] is a list that gets pop()d (reverse order).
