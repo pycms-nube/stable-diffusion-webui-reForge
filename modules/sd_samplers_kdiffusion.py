@@ -40,6 +40,7 @@ samplers_k_diffusion = [
     ('SURE Adaptive', 'sample_sure_adaptive', ['k_sure_adaptive'], {}),
     ('DPM++ 2M SURE', 'sample_dpmpp_2m_sure', ['k_dpmpp_2m_sure'], {'scheduler': 'karras'}),
     ('DPM++ 2M SDE SURE', 'sample_dpmpp_2m_sde_sure', ['k_dpmpp_2m_sde_sure'], {'scheduler': 'exponential', 'brownian_noise': True}),
+    ('DPM++ 3M SDE SURE', 'sample_dpmpp_3m_sde_sure', ['k_dpmpp_3m_sde_sure'], {'scheduler': 'exponential', 'discard_next_to_last_sigma': True, 'brownian_noise': True}),
     ('DPM++ 2M SDE SURE Adaptive', 'sample_dpmpp_2m_sde_sure_adaptive', ['k_dpmpp_2m_sde_sure_adaptive'], {}),
     ('DPM++ 2S a SURE', 'sample_dpmpp_2s_a_sure', ['k_dpmpp_2s_a_sure'], {'scheduler': 'karras'}),
     ('DPM++ 2S a SURE Adaptive', 'sample_dpmpp_2s_a_sure_adaptive', ['k_dpmpp_2s_a_sure_adaptive'], {}),
@@ -292,6 +293,25 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
         steps = steps or p.steps
 
         sigmas = self.get_sigmas(p, steps).to(x.device)
+
+        _ms = getattr(getattr(self.model_wrap, 'inner_model', None), 'model_sampling', None)
+        _diff_active = getattr(getattr(shared, 'sd_model', None), 'diff_pipeline', None) is not None
+        if _ms is not None:
+            print(
+                f"[KDiffusion.sample] sampler={getattr(self, 'funcname', '?')}  steps={steps}"
+                f"  sched_sigma[0]={float(sigmas[0]):.4f}  sched_sigma[-1]={float(sigmas[-1]):.6f}"
+                f"  model_sigma_max={float(_ms.sigma_max):.4f}  model_sigma_min={float(_ms.sigma_min):.5f}"
+                f"  zsnr={bool(getattr(_ms, 'zsnr', False))}"
+                f"  x_scale={'sgm' if shared.opts.sgm_noise_multiplier else 'sigma[0]'}"
+                f"  diff_pipeline={_diff_active}"
+            )
+        else:
+            print(
+                f"[KDiffusion.sample] sampler={getattr(self, 'funcname', '?')}  steps={steps}"
+                f"  sched_sigma[0]={float(sigmas[0]):.4f}  sched_sigma[-1]={float(sigmas[-1]):.6f}"
+                f"  model_sampling=None (inner_model path not found)"
+                f"  diff_pipeline={_diff_active}"
+            )
 
         if shared.opts.sgm_noise_multiplier:
             p.extra_generation_params["SGM noise multiplier"] = True

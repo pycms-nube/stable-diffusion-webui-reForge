@@ -22,6 +22,7 @@ import ldm_patched.modules.text_encoders.omnigen2
 import modules.shared as shared
 
 from . import supported_models_base
+from .supported_models_base import apply_checkpoint_sampling_params
 from . import latent_formats
 
 from . import diffusers_convert
@@ -199,7 +200,17 @@ class SDXL(supported_models_base.BASE):
 
     memory_usage_factor = 0.8
 
-    def model_type(self, state_dict, prefix=""):
+    def model_type(self, state_dict, prefix="", metadata=None):
+        # SAI ModelSpec header takes precedence when present
+        if metadata:
+            pred = metadata.get("modelspec.prediction_type", "")
+            if pred == "v_prediction":
+                if metadata.get("modelspec.ztsnr", "") == "true" or "ztsnr" in state_dict:
+                    self.sampling_settings["zsnr"] = True
+                return model_base.ModelType.V_PREDICTION
+            elif pred == "epsilon":
+                return model_base.ModelType.EPS
+
         if 'edm_mean' in state_dict and 'edm_std' in state_dict: #Playground V2.5
             self.latent_format = latent_formats.SDXL_Playground_2_5()
             self.sampling_settings["sigma_data"] = 0.5
@@ -219,9 +230,23 @@ class SDXL(supported_models_base.BASE):
             return model_base.ModelType.EPS
 
     def get_model(self, state_dict, prefix="", device=None):
-        out = model_base.SDXL(self, model_type=self.model_type(state_dict, prefix), device=device)
+        model_t = self.model_type(state_dict, prefix)
+        out = model_base.SDXL(self, model_type=model_t, device=device)
         if self.inpaint_model():
             out.set_inpaint()
+        ztsnr_detected = apply_checkpoint_sampling_params(out, state_dict)
+        if ztsnr_detected and not out.model_sampling.zsnr:
+            # alphas_cumprod[-1] < 1e-5 signals ZTSNR even without explicit 'ztsnr' key
+            out.model_sampling.zsnr = True
+            print(
+                f"[SDXL.get_model] ZTSNR detected from alphas_cumprod content — "
+                f"stamped zsnr=True  sigma_max={float(out.model_sampling.sigma_max):.2f}"
+            )
+        print(
+            f"[SDXL.get_model] model_type={model_t}  zsnr={out.model_sampling.zsnr}"
+            f"  sigma_min={float(out.model_sampling.sigma_min):.5f}"
+            f"  sigma_max={float(out.model_sampling.sigma_max):.4f}"
+        )
         return out
 
     def process_clip_state_dict(self, state_dict):
