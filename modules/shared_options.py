@@ -780,6 +780,19 @@ options_templates.update(options_section(('sampler-params', "reForge Sampler Par
     "dpm_adaptive_s_noise": OptionInfo(1.0, "DPM Adaptive s_noise", gr.Slider, {"minimum": 0.0, "maximum": 2.0, "step": 0.01}),
     "dpm2_ancestral_s_noise": OptionInfo(1.0, "DPM2 Ancestral s_noise", gr.Slider, {"minimum": 0.0, "maximum": 2.0, "step": 0.01}),
 
+    # SURE Sampler Parameters
+    "sure_group": OptionHTML("<br><h3>SURE Sampler Settings</h3>"),
+    "sure_alpha": OptionInfo(0.05, "SURE - alpha (gradient step size)", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.001}, infotext='SURE alpha').info('Default = 0.05; SURE gradient step size — controls how strongly SURE corrects x̂₀ each step'),
+    "sure_n_mc": OptionInfo(1, "SURE - n_mc (Monte Carlo samples)", gr.Slider, {"minimum": 1, "maximum": 16, "step": 1}, infotext='SURE n_mc').info('Default = 1; number of Monte Carlo samples for Hutchinson trace estimate; higher = more accurate but slower'),
+    "sure_eps": OptionInfo(1e-3, "SURE - eps (finite-difference epsilon)", gr.Slider, {"minimum": 1e-5, "maximum": 0.1, "step": 1e-5}, infotext='SURE eps').info('Default = 0.001; finite-difference epsilon for Jacobian MC estimate'),
+    "sure_jac_interval": OptionInfo(2, "SURE - jac_interval (Jacobian every N steps)", gr.Slider, {"minimum": -1, "maximum": 16, "step": 1}, infotext='SURE jac_interval').info('Default = 2; compute full Jacobian every N correction steps; -1 = adaptive'),
+    "sure_preheat_steps": OptionInfo(-1, "SURE - preheat_steps (plain steps before correction)", gr.Slider, {"minimum": -1, "maximum": 50, "step": 1}, infotext='SURE preheat_steps').info('Default = -1 (auto: 15% of steps, min 2); number of plain denoising steps before SURE correction begins'),
+
+    # DC-Solver Parameters
+    "dc_solver_group": OptionHTML("<br><h3>DC-Solver Settings</h3>"),
+    "dc_solver_order": OptionInfo(2, "DC-Solver - order", gr.Slider, {"minimum": 1, "maximum": 3, "step": 1}, infotext='DC-Solver order').info('Default = 2; multistep predictor-corrector order (1 = Euler/DPM-Solver++(1), 2 = DPM-Solver++(2M) style)'),
+    "dc_solver_ratio": OptionInfo(0.5, "DC-Solver - compensation ratio", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.01}, infotext='DC-Solver ratio').info('Default = 0.5; dynamic compensation ratio applied uniformly to all steps; 1.0 = no compensation (pure DPM-Solver++(2M)), 0.0 = full compensation'),
+
     }))
 
 options_templates.update(options_section(('sampler-params', "Custom Sampler Parameters", "sd"), {

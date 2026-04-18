@@ -265,6 +265,11 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
         else:
             pass
 
+        # DC-Solver: build uniform dc_ratios list now that step count is known
+        if getattr(p, '_dc_solver_ratio', None) is not None:
+            n_steps = len(sigma_sched) - 1
+            extra_params_kwargs['dc_ratios'] = [p._dc_solver_ratio] * n_steps
+
         self.model_wrap_cfg.init_latent = x
         self.last_latent = x
         self.sampler_extra_args = {
@@ -341,6 +346,11 @@ class KDiffusionSampler(sd_samplers_common.Sampler):
                 extra_params_kwargs['solver_type'] = 'heun'
         else:
             pass
+
+        # DC-Solver: build uniform dc_ratios list now that step count is known
+        if getattr(p, '_dc_solver_ratio', None) is not None:
+            n_steps = len(sigmas) - 1
+            extra_params_kwargs['dc_ratios'] = [p._dc_solver_ratio] * n_steps
 
         self.last_latent = x
         self.sampler_extra_args = {
