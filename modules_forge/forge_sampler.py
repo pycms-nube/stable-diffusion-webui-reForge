@@ -27,7 +27,11 @@ def cond_from_a1111_to_patched_ldm(cond):
         pooled_output=pooled_output,
         model_conds=dict(
             c_crossattn=CONDCrossAttn(cross_attn),
-            y=CONDRegular(pooled_output)
+            y=CONDRegular(pooled_output),
+            # adm_text_embeds carries the raw pooled text embedding (1280-dim for SDXL
+            # CLIP-G) so DiffPipeline.apply_model can use the primary branch instead of
+            # the y-split fallback.  The ldm path ignores unknown model_conds keys.
+            adm_text_embeds=CONDRegular(pooled_output),
         )
     )
 
