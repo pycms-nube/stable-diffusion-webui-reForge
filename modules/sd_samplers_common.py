@@ -373,6 +373,52 @@ class Sampler:
                 extra_params_kwargs['solver_type'] = solver_type
                 p.extra_generation_params['DPM++ 2M solver'] = solver_type
 
+        _SURE_SAMPLERS = {
+            'sample_sure', 'sample_sure_adaptive',
+            'sample_dpmpp_2m_sure', 'sample_dpmpp_2m_sde_sure',
+            'sample_dpmpp_3m_sde_sure', 'sample_dpmpp_2m_sde_sure_adaptive',
+            'sample_dpmpp_2s_a_sure', 'sample_dpmpp_2s_a_sure_adaptive',
+        }
+        if self.funcname in _SURE_SAMPLERS:
+            import inspect as _inspect
+            _sure_sig = _inspect.signature(self.func).parameters
+            sure_alpha = getattr(shared.opts, 'sure_alpha', 0.05)
+            sure_n_mc  = getattr(shared.opts, 'sure_n_mc', 1)
+            sure_eps   = getattr(shared.opts, 'sure_eps', 1e-3)
+            sure_jac_interval   = getattr(shared.opts, 'sure_jac_interval', 2)
+            sure_preheat_steps  = getattr(shared.opts, 'sure_preheat_steps', -1)
+            if 'sure_alpha'         in _sure_sig: extra_params_kwargs['sure_alpha']         = sure_alpha
+            if 'sure_n_mc'          in _sure_sig: extra_params_kwargs['sure_n_mc']          = sure_n_mc
+            if 'sure_eps'           in _sure_sig: extra_params_kwargs['sure_eps']           = sure_eps
+            if 'sure_jac_interval'  in _sure_sig: extra_params_kwargs['sure_jac_interval']  = sure_jac_interval
+            if 'sure_preheat_steps' in _sure_sig: extra_params_kwargs['sure_preheat_steps'] = sure_preheat_steps
+            if 'sure_preheat_frac'  in _sure_sig:
+                # adaptive variants use a fraction instead of a fixed count
+                frac = max(0.0, min(1.0, sure_preheat_steps / 20.0)) if sure_preheat_steps >= 0 else 0.3
+                extra_params_kwargs['sure_preheat_frac'] = frac
+            p.extra_generation_params['SURE alpha']         = sure_alpha
+            p.extra_generation_params['SURE n_mc']          = sure_n_mc
+            p.extra_generation_params['SURE eps']           = sure_eps
+            p.extra_generation_params['SURE jac_interval']  = sure_jac_interval
+            p.extra_generation_params['SURE preheat_steps'] = sure_preheat_steps
+
+        if self.funcname == 'sample_dc_solver':
+            import inspect as _inspect
+            _dc_sig = _inspect.signature(self.func).parameters
+            dc_order = getattr(shared.opts, 'dc_solver_order', 2)
+            dc_ratio  = getattr(shared.opts, 'dc_solver_ratio', 0.5)
+            if 'order' in _dc_sig:
+                extra_params_kwargs['order'] = dc_order
+            if 'dc_ratios' in _dc_sig:
+                extra_params_kwargs['dc_ratios'] = None  # will be filled per-step by the sampler
+                # we pass ratio via a list built here so every step uses the configured value;
+                # length is unknown at this point so we use None and let the sampler default to 1.0,
+                # then override with a uniform list once sigmas are known
+                # — instead, store on p so KDiffusionSampler.sample() can inject it
+                p._dc_solver_ratio = dc_ratio
+            p.extra_generation_params['DC-Solver order'] = dc_order
+            p.extra_generation_params['DC-Solver ratio'] = dc_ratio
+
         # Handle standard sigma parameters
         if len(self.extra_params) > 0:
             s_churn = getattr(shared.opts,'s_churn', p.s_churn)
