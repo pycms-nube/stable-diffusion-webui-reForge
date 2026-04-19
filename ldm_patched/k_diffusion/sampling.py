@@ -1119,7 +1119,9 @@ def sample_dpmpp_2s_ancestral(model, x, sigmas, extra_args=None, callback=None, 
 def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                              noise_sampler=None, eta=1., s_noise=1.,
                              sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                             sure_preheat_steps=-1, sure_jac_interval=-1):
+                             sure_preheat_steps=-1, sure_jac_interval=-1,
+                             sure_adam_mode='none', sure_adam_beta1=0.9,
+                             sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """DPM-Solver++(2S) Ancestral with SURE trajectory correction.
 
     SURE corrects x̂₀ on the first (main) model call at each step.
@@ -1146,10 +1148,11 @@ def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, dis
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
-        "DPM++2Sa-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f",
-        n_steps, preheat, eta, sure_alpha,
+        "DPM++2Sa-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f  adam=%s",
+        n_steps, preheat, eta, sure_alpha, sure_adam_mode,
     )
 
     for i in trange(n_steps, disable=disable):
@@ -1174,6 +1177,9 @@ def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, dis
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
                 use_jac=_use_jac, sigma_t=sigma,
+                adam_state=_adam_state, adam_mode=sure_adam_mode,
+                adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+                adam_wd=sure_adam_wd,
             )
             _corr_count += 1
             _jac_ratio_new = _stats.get('jac_ratio')
@@ -1231,7 +1237,9 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
                                      pcoeff=0., icoeff=1., dcoeff=0., accept_safety=0.81,
                                      eta=1., s_noise=1.,
                                      sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                                     sure_preheat_frac=0.3, sure_jac_interval=2):
+                                     sure_preheat_frac=0.3, sure_jac_interval=2,
+                                     sure_adam_mode='none', sure_adam_beta1=0.9,
+                                     sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """DPM-Solver++(2S) Ancestral + SURE with adaptive step size (PID).
 
     Error estimate: compare 1st-order Euler (x_low) vs 2S midpoint (x_high),
@@ -1262,14 +1270,16 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
     rtol_t = torch.tensor(rtol, dtype=x.dtype, device=x.device)
 
     _corr_count = 0
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
     info = {'steps': 0, 'nfe': 0, 'n_accept': 0, 'n_reject': 0}
     x_prev = x.clone()
     s = t_start.clone()
 
     _sure_logger.info(
         "DPM++2Sa-SURE-Adaptive: sigma [%.4f → %.4f]  preheat_frac=%.2f"
-        "  eta=%.2f  alpha=%.4f  jac_interval=%d",
+        "  eta=%.2f  alpha=%.4f  jac_interval=%d  adam=%s",
         sigma_max, sigma_min, sure_preheat_frac, eta, sure_alpha, sure_jac_interval,
+        sure_adam_mode,
     )
 
     with tqdm(disable=disable) as pbar:
@@ -1299,6 +1309,9 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
                     model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
                     use_jac=_use_jac, sigma_t=sigma_s,
+                    adam_state=_adam_state, adam_mode=sure_adam_mode,
+                    adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+                    adam_wd=sure_adam_wd,
                 )
                 _corr_count += 1
 
@@ -1540,7 +1553,9 @@ def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None, disable=No
 
 def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                           sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                          sure_preheat_steps=-1, sure_jac_interval=-1):
+                          sure_preheat_steps=-1, sure_jac_interval=-1,
+                          sure_adam_mode='none', sure_adam_beta1=0.9,
+                          sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """DPM-Solver++(2M) with SURE trajectory correction.
 
     Fully deterministic ODE — zero noise injection at any step. SURE correction
@@ -1569,11 +1584,13 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
-        "DPM++2M-SURE: %d steps  preheat=%d  alpha=%.4f  jac_interval=%s",
+        "DPM++2M-SURE: %d steps  preheat=%d  alpha=%.4f  jac_interval=%s  adam=%s",
         n_steps, preheat, sure_alpha,
         "adaptive" if sure_jac_interval < 1 else str(sure_jac_interval),
+        sure_adam_mode,
     )
 
     old_denoised = None
@@ -1598,6 +1615,9 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
                 use_jac=_use_jac, sigma_t=sigma,
+                adam_state=_adam_state, adam_mode=sure_adam_mode,
+                adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+                adam_wd=sure_adam_wd,
             )
             _corr_count += 1
 
@@ -1647,7 +1667,9 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
 def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                                noise_sampler=None, eta=1., s_noise=1., solver_type='midpoint',
                                sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                               sure_preheat_steps=-1, sure_jac_interval=-1):
+                               sure_preheat_steps=-1, sure_jac_interval=-1,
+                               sure_adam_mode='none', sure_adam_beta1=0.9,
+                               sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """DPM-Solver++(2M) SDE with SURE trajectory correction.
 
     Matches the SURE paper (arxiv 2512.23232) Algorithm 1 which uses a stochastic
@@ -1689,10 +1711,11 @@ def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
-        "DPM++2M-SDE-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f  solver=%s",
-        n_steps, preheat, eta, sure_alpha, solver_type,
+        "DPM++2M-SDE-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f  solver=%s  adam=%s",
+        n_steps, preheat, eta, sure_alpha, solver_type, sure_adam_mode,
     )
 
     old_denoised = None
@@ -1719,6 +1742,9 @@ def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
                 use_jac=_use_jac, sigma_t=sigma,
+                adam_state=_adam_state, adam_mode=sure_adam_mode,
+                adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+                adam_wd=sure_adam_wd,
             )
             _corr_count += 1
 
@@ -1903,7 +1929,9 @@ def sample_dpmpp_3m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
 def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                                noise_sampler=None, eta=1., s_noise=1.,
                                sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                               sure_preheat_steps=-1, sure_jac_interval=-1):
+                               sure_preheat_steps=-1, sure_jac_interval=-1,
+                               sure_adam_mode='none', sure_adam_beta1=0.9,
+                               sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """DPM-Solver++(3M) SDE with SURE trajectory correction.
 
     Implements Algorithm 1 from arXiv:2512.23232 on top of the 3rd-order multistep
@@ -1949,10 +1977,11 @@ def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
-        "DPM++3M-SDE-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f",
-        n_steps, preheat, eta, sure_alpha,
+        "DPM++3M-SDE-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f  adam=%s",
+        n_steps, preheat, eta, sure_alpha, sure_adam_mode,
     )
 
     denoised_1, denoised_2 = None, None
@@ -1979,6 +2008,9 @@ def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
                 model, x0_hat, sigma_hat_0, s_in, extra_args,
                 alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
                 use_jac=_use_jac, sigma_t=sigma,
+                adam_state=_adam_state, adam_mode=sure_adam_mode,
+                adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+                adam_wd=sure_adam_wd,
             )
             _corr_count += 1
 
@@ -2055,7 +2087,9 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
                                        pcoeff=0., icoeff=1., dcoeff=0., accept_safety=0.81,
                                        eta=1., s_noise=1.,
                                        sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                                       sure_preheat_frac=0.3, sure_jac_interval=2):
+                                       sure_preheat_frac=0.3, sure_jac_interval=2,
+                                       sure_adam_mode='none', sure_adam_beta1=0.9,
+                                       sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """DPM-Solver++(2M) SDE with SURE correction and adaptive step size (PID).
 
     Combines three ideas from the literature:
@@ -2105,14 +2139,16 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
     rtol_t = torch.tensor(rtol, dtype=x.dtype, device=x.device)
 
     _corr_count = 0
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
     info = {'steps': 0, 'nfe': 0, 'n_accept': 0, 'n_reject': 0}
     x_prev = x.clone()
     s = t_start.clone()
 
     _sure_logger.info(
         "DPM++2M-SDE-SURE-Adaptive: sigma [%.4f → %.4f]  preheat_frac=%.2f"
-        "  eta=%.2f  alpha=%.4f  jac_interval=%d",
+        "  eta=%.2f  alpha=%.4f  jac_interval=%d  adam=%s",
         sigma_max, sigma_min, sure_preheat_frac, eta, sure_alpha, sure_jac_interval,
+        sure_adam_mode,
     )
 
     with tqdm(disable=disable) as pbar:
@@ -2138,6 +2174,9 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
                     model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
                     use_jac=_use_jac, sigma_t=sigma_s,
+                    adam_state=_adam_state, adam_mode=sure_adam_mode,
+                    adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+                    adam_wd=sure_adam_wd,
                 )
                 _corr_count += 1
 
@@ -4954,7 +4993,10 @@ def _pca_noise_estimate(x0_hat, patch_size=8, min_sigma=1e-3):
 
 def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
                      alpha=0.05, n_mc=1, eps_mc=1e-3, use_jac=True,
-                     sigma_t=None):
+                     sigma_t=None,
+                     adam_state=None, adam_mode='none',
+                     adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
+                     adam_wd=0.01):
     """SURE gradient correction per Algorithm 1 of arXiv:2512.23232.
 
     Two no-grad forward passes implement the MC-SURE step without backward:
@@ -4972,6 +5014,15 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
     Per §5 of the paper, a "Monte Carlo trace estimator that avoids explicit
     Jacobians" is the intended deployment strategy.  The Jacobian gradient
     contribution is O(σ̂₀²) and small when σ̂₀ is the small residual noise.
+
+    adam_state: dict with keys 'm', 'v', 't' — mutated in-place across steps.
+                Pass None to use plain gradient descent (default behaviour).
+    adam_mode:  'none' = plain SGD, 'adam' = Adam, 'adamw' = AdamW.
+    adam_beta1: first-moment decay (default 0.9).
+    adam_beta2: second-moment decay (default 0.999).
+    adam_eps:   denominator stabiliser (default 1e-8).
+    adam_wd:    weight decay for AdamW only — decoupled from moment updates,
+                shrinks x0_hat toward zero to anchor the correction near T₀.
     """
     # ε: paper says max_pixel / 1000; clamp to eps_mc for numerical safety
     eps = max(float(x0_hat.abs().max().item()) / 1000.0, float(eps_mc))
@@ -5015,26 +5066,79 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
         grad = grad * (x0_std / gs)
     grad = grad.clamp(-3.0 * x0_std, 3.0 * x0_std)
 
-    # Scale step size by current diffusion sigma so correction is near-zero at
-    # early high-noise steps and grows to full alpha at the final clean step.
-    # The paper operates after conditional guidance where σ̂₀ is already tiny;
-    # in unconditional txt2img the denoiser at step 1 (sigma≈14) produces a rough
-    # sketch and a fixed alpha would cause cumulative blur. sigma_t=None → no scaling.
-    if sigma_t is not None:
+    # --- Adam / AdamW adaptive gradient ----------------------------------------
+    # Each diffusion step is one "optimizer iteration". Adam tracks per-pixel
+    # first (mean) and second (variance) moments of the SURE gradient across
+    # steps. Pixels with high-variance gradients (noisy regions) automatically
+    # receive smaller effective corrections; pixels with consistent gradient
+    # direction receive larger ones — without touching alpha.
+    #
+    # AdamW adds a decoupled weight-decay term that shrinks x0_hat toward zero
+    # independently of the moment estimates. In SURE terms this anchors the
+    # correction near the denoiser's T₀ prediction and prevents drift from
+    # accumulating across many steps — useful when SURE gradients are biased at
+    # high σ (early steps).
+    if adam_state is not None and adam_mode in ('adam', 'adamw'):
+        adam_state['t'] += 1
+        t_adam = adam_state['t']
+        if adam_state['m'] is None:
+            adam_state['m'] = torch.zeros_like(grad)
+            adam_state['v'] = torch.zeros_like(grad)
+        m = adam_state['m']
+        v = adam_state['v']
+
+        # Moment updates (identical for Adam and AdamW)
+        m.mul_(adam_beta1).add_((1.0 - adam_beta1) * grad)
+        v.mul_(adam_beta2).add_((1.0 - adam_beta2) * grad.pow(2))
+
+        # Bias correction
+        bc1 = 1.0 - adam_beta1 ** t_adam
+        bc2 = 1.0 - adam_beta2 ** t_adam
+        m_hat = m / bc1
+        v_hat = v / bc2
+
+        # Adaptive gradient — Adam normalises each pixel by its historical
+        # gradient std, so alpha now controls the corrected-unit step size
+        # directly rather than raw-gradient magnitude.
+        adam_g = m_hat / (v_hat.sqrt() + adam_eps)
+
+        effective_grad = adam_g
+    else:
+        effective_grad = grad
+
+    # When Adam is active it normalises each pixel by its historical gradient std,
+    # so alpha is already a scale-invariant learning rate — sigma scaling is
+    # redundant and would double-suppress early steps. For plain SGD (adam_mode
+    # 'none') the raw gradient magnitude grows with sigma, so we keep the manual
+    # heuristic to prevent cumulative blur at high-noise steps.
+    if sigma_t is not None and (adam_state is None or adam_mode == 'none'):
         effective_alpha = alpha / (1.0 + float(sigma_t))
     else:
         effective_alpha = alpha
 
-    x0_corrected = (x0_hat - effective_alpha * grad).detach()
+    if adam_mode == 'adamw' and adam_state is not None:
+        # Decoupled weight decay: applied to x0_hat directly, not folded into
+        # the moment estimates. Pulls the corrected estimate toward zero
+        # (the latent-space origin ≈ "no structure") — a mild regulariser
+        # that stops the trajectory from drifting far from T₀.
+        x0_corrected = (x0_hat * (1.0 - effective_alpha * adam_wd)
+                        - effective_alpha * effective_grad).detach()
+    else:
+        x0_corrected = (x0_hat - effective_alpha * effective_grad).detach()
 
+    _eff_grad_rms = float((effective_grad ** 2).mean() ** 0.5)
+    _raw_grad_rms = float((grad ** 2).mean() ** 0.5)
     _sure_logger.info(
         "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  eff_alpha=%.5f  "
-        "sure=%.4f  jac_trace=%s  residual_rms=%.5f  grad_rms=%.5f",
+        "sure=%.4f  jac_trace=%s  residual_rms=%.5f  grad_rms=%.5f  "
+        "eff_grad_rms=%.5f  adam_ratio=%.4f",
         eps, sigma_hat_0, float(sigma_p), effective_alpha,
         sure_val,
         f"{jac_trace:.4f}" if jac_trace is not None else "n/a",
         float((residual ** 2).mean() ** 0.5),
-        float((grad ** 2).mean() ** 0.5),
+        _raw_grad_rms,
+        _eff_grad_rms,
+        _eff_grad_rms / (_raw_grad_rms + 1e-8),
     )
 
     return x0_corrected, {'jac_ratio': None}
@@ -5042,7 +5146,9 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
 
 def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                 sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                sure_jac_interval=2):
+                sure_jac_interval=2,
+                sure_adam_mode='none', sure_adam_beta1=0.9,
+                sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """SURE Guided Posterior Sampling (SGPS) — Euler Ancestral variant.
 
     Implements Algorithm 1 from arXiv:2512.23232 directly.  Every step:
@@ -5067,11 +5173,12 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
     _EMA_A = 0.35
     _dyn_jac_interval: int        = max(1, sure_jac_interval)
     _jac_ratio_ema:   float | None = None
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
 
     n_steps = len(sigmas) - 1
     _sure_logger.info(
-        "SURE sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d",
-        n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval,
+        "SURE sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d  adam=%s",
+        n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval, sure_adam_mode,
     )
 
     for i in trange(n_steps, disable=disable):
@@ -5097,6 +5204,9 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
             model, x0_hat, sigma_hat_0, s_in, extra_args,
             alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
             use_jac=_use_jac, sigma_t=sigma,
+            adam_state=_adam_state, adam_mode=sure_adam_mode,
+            adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+            adam_wd=sure_adam_wd,
         )
 
         # Adapt jac_interval from jac_ratio EMA
@@ -5148,7 +5258,9 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
                           rtol=0.05, atol=0.0078, h_init=0.05,
                           pcoeff=0., icoeff=1., dcoeff=0., accept_safety=0.81,
                           sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
-                          sure_preheat_frac=0.3, sure_jac_interval=2):
+                          sure_preheat_frac=0.3, sure_jac_interval=2,
+                          sure_adam_mode='none', sure_adam_beta1=0.9,
+                          sure_adam_beta2=0.999, sure_adam_wd=0.01):
     """SURE sampler with adaptive step size (PID controller on DPM-Solver-2 error).
 
     Combines:
@@ -5209,6 +5321,7 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
 
     # jac_interval tracking (fixed for adaptive sampler — not adaptive, to keep control predictable)
     _corr_count = 0
+    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
 
     with tqdm(disable=disable) as pbar:
         while s < t_end - 1e-5:
@@ -5232,6 +5345,9 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
                     model, x0_hat, sigma_hat_0, s_in, extra_args,
                     alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
                     use_jac=_use_jac, sigma_t=sigma_s,
+                    adam_state=_adam_state, adam_mode=sure_adam_mode,
+                    adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
+                    adam_wd=sure_adam_wd,
                 )
                 _corr_count += 1
 

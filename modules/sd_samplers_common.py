@@ -387,6 +387,10 @@ class Sampler:
             sure_eps   = getattr(shared.opts, 'sure_eps', 1e-3)
             sure_jac_interval   = getattr(shared.opts, 'sure_jac_interval', 2)
             sure_preheat_steps  = getattr(shared.opts, 'sure_preheat_steps', -1)
+            sure_adam_mode  = getattr(shared.opts, 'sure_adam_mode', 'none')
+            sure_adam_beta1 = getattr(shared.opts, 'sure_adam_beta1', 0.9)
+            sure_adam_beta2 = getattr(shared.opts, 'sure_adam_beta2', 0.999)
+            sure_adam_wd    = getattr(shared.opts, 'sure_adam_wd', 0.01)
             if 'sure_alpha'         in _sure_sig: extra_params_kwargs['sure_alpha']         = sure_alpha
             if 'sure_n_mc'          in _sure_sig: extra_params_kwargs['sure_n_mc']          = sure_n_mc
             if 'sure_eps'           in _sure_sig: extra_params_kwargs['sure_eps']           = sure_eps
@@ -396,11 +400,21 @@ class Sampler:
                 # adaptive variants use a fraction instead of a fixed count
                 frac = max(0.0, min(1.0, sure_preheat_steps / 20.0)) if sure_preheat_steps >= 0 else 0.3
                 extra_params_kwargs['sure_preheat_frac'] = frac
+            if 'sure_adam_mode'  in _sure_sig: extra_params_kwargs['sure_adam_mode']  = sure_adam_mode
+            if 'sure_adam_beta1' in _sure_sig: extra_params_kwargs['sure_adam_beta1'] = sure_adam_beta1
+            if 'sure_adam_beta2' in _sure_sig: extra_params_kwargs['sure_adam_beta2'] = sure_adam_beta2
+            if 'sure_adam_wd'    in _sure_sig: extra_params_kwargs['sure_adam_wd']    = sure_adam_wd
             p.extra_generation_params['SURE alpha']         = sure_alpha
             p.extra_generation_params['SURE n_mc']          = sure_n_mc
             p.extra_generation_params['SURE eps']           = sure_eps
             p.extra_generation_params['SURE jac_interval']  = sure_jac_interval
             p.extra_generation_params['SURE preheat_steps'] = sure_preheat_steps
+            if sure_adam_mode != 'none':
+                p.extra_generation_params['SURE adam_mode']  = sure_adam_mode
+                p.extra_generation_params['SURE adam_beta1'] = sure_adam_beta1
+                p.extra_generation_params['SURE adam_beta2'] = sure_adam_beta2
+                if sure_adam_mode == 'adamw':
+                    p.extra_generation_params['SURE adam_wd'] = sure_adam_wd
 
         if self.funcname == 'sample_dc_solver':
             import inspect as _inspect
