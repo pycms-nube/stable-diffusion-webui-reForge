@@ -787,6 +787,10 @@ options_templates.update(options_section(('sampler-params', "reForge Sampler Par
     "sure_eps": OptionInfo(1e-3, "SURE - eps (finite-difference epsilon)", gr.Slider, {"minimum": 1e-5, "maximum": 0.1, "step": 1e-5}, infotext='SURE eps').info('Default = 0.001; finite-difference epsilon for Jacobian MC estimate'),
     "sure_jac_interval": OptionInfo(2, "SURE - jac_interval (Jacobian every N steps)", gr.Slider, {"minimum": -1, "maximum": 16, "step": 1}, infotext='SURE jac_interval').info('Default = 2; compute full Jacobian every N correction steps; -1 = adaptive'),
     "sure_preheat_steps": OptionInfo(-1, "SURE - preheat_steps (plain steps before correction)", gr.Slider, {"minimum": -1, "maximum": 50, "step": 1}, infotext='SURE preheat_steps').info('Default = -1 (auto: 15% of steps, min 2); number of plain denoising steps before SURE correction begins'),
+    "sure_adam_mode": OptionInfo("none", "SURE - adam_mode (adaptive gradient method)", gr.Radio, {"choices": ["none", "adam", "adamw"]}, infotext='SURE adam_mode').info('none = plain SGD step; adam = Adam adaptive LR (per-pixel variance damping); adamw = Adam + decoupled weight decay that anchors correction toward T₀'),
+    "sure_adam_beta1": OptionInfo(0.9, "SURE - adam_beta1 (first-moment decay)", gr.Slider, {"minimum": 0.5, "maximum": 0.999, "step": 0.001}, infotext='SURE adam_beta1').info('Default = 0.9; momentum decay for running gradient mean — higher = more inertia across steps'),
+    "sure_adam_beta2": OptionInfo(0.999, "SURE - adam_beta2 (second-moment decay)", gr.Slider, {"minimum": 0.9, "maximum": 0.9999, "step": 0.0001}, infotext='SURE adam_beta2').info('Default = 0.999; decay for running gradient variance — controls per-pixel step-size adaptation'),
+    "sure_adam_wd": OptionInfo(0.01, "SURE - adam_wd (AdamW weight decay)", gr.Slider, {"minimum": 0.0, "maximum": 0.1, "step": 0.001}, infotext='SURE adam_wd').info('Default = 0.01; AdamW only — decoupled weight decay pulling x̂₀ toward zero each step; has no effect when adam_mode is none or adam'),
 
     # DC-Solver Parameters
     "dc_solver_group": OptionHTML("<br><h3>DC-Solver Settings</h3>"),
