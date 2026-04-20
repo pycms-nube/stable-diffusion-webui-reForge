@@ -1,3 +1,4 @@
+import logging
 import torch
 from modules import prompt_parser, sd_samplers_common
 import modules.shared as shared
@@ -6,6 +7,8 @@ from modules.script_callbacks import AfterCFGCallbackParams, cfg_after_cfg_callb
 from modules_forge import forge_sampler
 from ldm_patched.modules.conds import CONDRegular
 from ldm_patched.modules.samplers import sampling_function
+
+_log = logging.getLogger(__name__)
 
 
 def catenate_conds(conds):
@@ -78,6 +81,10 @@ class CFGDenoiser(torch.nn.Module):
 
     def pad_cond_uncond(self, cond, uncond):
         empty = shared.sd_model.cond_stage_model_empty_prompt
+        if empty is None:
+            empty = self._compute_and_cache_empty_prompt()
+        if empty is None:
+            return self.pad_cond_uncond_v0(cond, uncond)
         num_repeats = (cond.shape[1] - uncond.shape[1]) // empty.shape[1]
 
         if num_repeats < 0:
@@ -88,6 +95,31 @@ class CFGDenoiser(torch.nn.Module):
             self.padded_cond_uncond = True
 
         return cond, uncond
+
+    def _compute_and_cache_empty_prompt(self):
+        """Compute and cache the empty-prompt embedding for Diffusers models.
+
+        Encodes "" through the model's text encoders and extracts the crossattn
+        tensor — the same shape unit used by pad_cond to tile padding chunks.
+        Caches the result on sd_model so it is only computed once per load.
+        """
+        try:
+            sd_model = shared.sd_model
+            if hasattr(sd_model, 'get_learned_conditioning'):
+                with torch.no_grad():
+                    d = sd_model.get_learned_conditioning([""])
+            elif hasattr(sd_model, 'cond_stage_model'):
+                with torch.no_grad():
+                    d = sd_model.cond_stage_model([""])
+            else:
+                return None
+            if isinstance(d, dict):
+                d = d['crossattn']
+            # d is [1, seq, hidden] — keep the single-chunk unit shape
+            sd_model.cond_stage_model_empty_prompt = d
+            return d
+        except Exception:
+            return None
 
     def pad_cond_uncond_v0(self, cond, uncond):
         is_dict_cond = isinstance(uncond, dict)

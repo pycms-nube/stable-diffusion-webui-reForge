@@ -184,7 +184,7 @@ class _FakeCondStageModel:
             # Fallback: return a zero tensor with SDXL combined dim
             return torch.zeros(1, nvpt, 2048)
 
-        return torch.cat(results, dim=2)  # (1, nvpt, 768+1280)
+        return torch.cat(results, dim=2).squeeze(0)  # (nvpt, 768+1280) — matches ldm GeneralConditioner shape
 
     # ---- conditioning ----------------------------------------------------
 
@@ -751,6 +751,79 @@ def _encode_prompts(pipe, prompts: list[str]):
     if pooled_embeds is not None:
         return {"crossattn": prompt_embeds, "vector": pooled_embeds}
     return {"crossattn": prompt_embeds}
+
+
+# ---------------------------------------------------------------------------
+# Textual inversion loader
+# ---------------------------------------------------------------------------
+
+def load_textual_inversion_embeddings(pipe, embeddings_dir: str) -> int:
+    """Load all .safetensors textual inversion embeddings from *embeddings_dir* into *pipe*.
+
+    Each .safetensors file is loaded via ``pipe.load_textual_inversion()`` using
+    the filename stem as the trigger token.  SDXL pipelines with both
+    ``text_encoder`` / ``text_encoder_2`` receive both ``clip_l`` and ``clip_g``
+    weight slices automatically when present in the file.
+
+    Multi-token embeddings (vec shape[0] > 1) are handled transparently by
+    diffusers, which creates one special token per row and maps the trigger
+    word to the full sequence at tokenization time.
+
+    Returns the number of embeddings successfully loaded.
+    """
+    import os
+    import logging
+
+    log = logging.getLogger(__name__)
+    loaded = 0
+
+    if not os.path.isdir(embeddings_dir):
+        log.warning("Textual inversion dir not found: %s", embeddings_dir)
+        return 0
+
+    for fn in sorted(os.listdir(embeddings_dir)):
+        if not fn.lower().endswith(".safetensors"):
+            continue
+        token_name = os.path.splitext(fn)[0]
+        path = os.path.join(embeddings_dir, fn)
+        try:
+            import safetensors.torch
+            state_dict = safetensors.torch.load_file(path, device="cpu")
+
+            clip_l = state_dict.get("clip_l")
+            clip_g = state_dict.get("clip_g")
+
+            if clip_l is not None or clip_g is not None:
+                # SDXL dual-encoder format: load each encoder separately.
+                if clip_l is not None and getattr(pipe, "text_encoder", None) is not None:
+                    pipe.load_textual_inversion(
+                        clip_l, token=token_name,
+                        text_encoder=pipe.text_encoder,
+                        tokenizer=pipe.tokenizer,
+                    )
+                if clip_g is not None and getattr(pipe, "text_encoder_2", None) is not None:
+                    pipe.load_textual_inversion(
+                        clip_g, token=token_name,
+                        text_encoder=pipe.text_encoder_2,
+                        tokenizer=pipe.tokenizer_2,
+                    )
+            elif len(state_dict) == 1:
+                # Single-key format — pass tensor directly.
+                tensor = next(iter(state_dict.values()))
+                pipe.load_textual_inversion(tensor, token=token_name)
+            else:
+                # Fall back to path-based loading (handles string_to_param etc.).
+                pipe.load_textual_inversion(path, token=token_name)
+
+            log.info("Loaded textual inversion embedding: %s → '%s'", fn, token_name)
+            loaded += 1
+        except Exception as exc:
+            log.warning("Failed to load embedding %s: %s", fn, exc)
+
+    if loaded:
+        print(f"[diffusers path hijack] Loaded {loaded} textual inversion embedding(s) "
+              f"from {embeddings_dir}")
+    return loaded
 
 
 # ---------------------------------------------------------------------------
