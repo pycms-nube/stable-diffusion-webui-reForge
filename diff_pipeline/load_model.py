@@ -405,6 +405,18 @@ def dummy_sdxl_hijack(checkpoint_info) -> Any:
         print(f"[diffusers path hijack] VAE upcasted to {vae_decode_dtype} "
               f"to avoid fp16 overflow during decode.")
 
+    # --- Textual inversion embeddings ----------------------------------------
+    # Load all .safetensors embeddings from the webui embeddings directory so
+    # trigger words work in prompts without any extra user steps.
+    try:
+        from modules.shared_cmd_options import cmd_opts as _cmd_opts
+        _emb_dir = getattr(_cmd_opts, 'embeddings_dir', None)
+        if _emb_dir:
+            from diff_pipeline.adapter import load_textual_inversion_embeddings
+            load_textual_inversion_embeddings(pipe, _emb_dir)
+    except Exception as _e:
+        print(f"[diffusers path hijack] Could not load textual inversion embeddings: {_e}")
+
     return DiffusersModelAdapter(pipe, checkpoint_info, model_type="sdxl")
 
 

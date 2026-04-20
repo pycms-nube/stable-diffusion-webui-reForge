@@ -20,7 +20,9 @@ def cond_from_a1111_to_patched_ldm(cond):
         return [result, ]
 
     cross_attn = cond['crossattn']
-    pooled_output = cond['vector']
+    pooled_output = cond.get('vector', None)
+    if pooled_output is None:
+        pooled_output = torch.zeros(cross_attn.shape[0], 1280, device=cross_attn.device, dtype=cross_attn.dtype)
 
     result = dict(
         cross_attn=cross_attn,
