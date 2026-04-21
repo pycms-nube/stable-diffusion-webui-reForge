@@ -1148,7 +1148,7 @@ def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, dis
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
         "DPM++2Sa-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f  adam=%s",
@@ -1270,7 +1270,7 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
     rtol_t = torch.tensor(rtol, dtype=x.dtype, device=x.device)
 
     _corr_count = 0
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
     info = {'steps': 0, 'nfe': 0, 'n_accept': 0, 'n_reject': 0}
     x_prev = x.clone()
     s = t_start.clone()
@@ -1584,7 +1584,7 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
         "DPM++2M-SURE: %d steps  preheat=%d  alpha=%.4f  jac_interval=%s  adam=%s",
@@ -1711,7 +1711,7 @@ def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
         "DPM++2M-SDE-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f  solver=%s  adam=%s",
@@ -1977,7 +1977,7 @@ def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
     _jac_ratio_ema:   float | None = None
     _corr_count: int               = 0
     _EMA_A = 0.35
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
 
     _sure_logger.info(
         "DPM++3M-SDE-SURE: %d steps  preheat=%d  eta=%.2f  alpha=%.4f  adam=%s",
@@ -2139,7 +2139,7 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
     rtol_t = torch.tensor(rtol, dtype=x.dtype, device=x.device)
 
     _corr_count = 0
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
     info = {'steps': 0, 'nfe': 0, 'n_accept': 0, 'n_reject': 0}
     x_prev = x.clone()
     s = t_start.clone()
@@ -5015,7 +5015,8 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
     Jacobians" is the intended deployment strategy.  The Jacobian gradient
     contribution is O(σ̂₀²) and small when σ̂₀ is the small residual noise.
 
-    adam_state: dict with keys 'm', 'v', 't' — mutated in-place across steps.
+    adam_state: dict with keys 'optimizer' (torch.optim.Adam/AdamW) and 'param'
+                (leaf tensor) — mutated in-place across steps via optimizer.step().
                 Pass None to use plain gradient descent (default behaviour).
     adam_mode:  'none' = plain SGD, 'adam' = Adam, 'adamw' = AdamW.
     adam_beta1: first-moment decay (default 0.9).
@@ -5066,73 +5067,73 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
         grad = grad * (x0_std / gs)
     grad = grad.clamp(-3.0 * x0_std, 3.0 * x0_std)
 
-    # --- Adam / AdamW adaptive gradient ----------------------------------------
-    # Each diffusion step is one "optimizer iteration". Adam tracks per-pixel
-    # first (mean) and second (variance) moments of the SURE gradient across
-    # steps. Pixels with high-variance gradients (noisy regions) automatically
-    # receive smaller effective corrections; pixels with consistent gradient
-    # direction receive larger ones — without touching alpha.
-    #
-    # AdamW adds a decoupled weight-decay term that shrinks x0_hat toward zero
-    # independently of the moment estimates. In SURE terms this anchors the
-    # correction near the denoiser's T₀ prediction and prevents drift from
-    # accumulating across many steps — useful when SURE gradients are biased at
-    # high σ (early steps).
-    if adam_state is not None and adam_mode in ('adam', 'adamw'):
-        adam_state['t'] += 1
-        t_adam = adam_state['t']
-        if adam_state['m'] is None:
-            adam_state['m'] = torch.zeros_like(grad)
-            adam_state['v'] = torch.zeros_like(grad)
-        m = adam_state['m']
-        v = adam_state['v']
-
-        # Moment updates (identical for Adam and AdamW)
-        m.mul_(adam_beta1).add_((1.0 - adam_beta1) * grad)
-        v.mul_(adam_beta2).add_((1.0 - adam_beta2) * grad.pow(2))
-
-        # Bias correction
-        bc1 = 1.0 - adam_beta1 ** t_adam
-        bc2 = 1.0 - adam_beta2 ** t_adam
-        m_hat = m / bc1
-        v_hat = v / bc2
-
-        # Adaptive gradient — Adam normalises each pixel by its historical
-        # gradient std, so alpha now controls the corrected-unit step size
-        # directly rather than raw-gradient magnitude.
-        adam_g = m_hat / (v_hat.sqrt() + adam_eps)
-
-        effective_grad = adam_g
-    else:
-        effective_grad = grad
-
-    # When Adam is active it normalises each pixel by its historical gradient std,
-    # so alpha is already a scale-invariant learning rate — sigma scaling is
-    # redundant and would double-suppress early steps. For plain SGD (adam_mode
-    # 'none') the raw gradient magnitude grows with sigma, so we keep the manual
-    # heuristic to prevent cumulative blur at high-noise steps.
+    # Compute effective_alpha first — needed as lr for the optimizer.
+    # Adam normalises gradients internally so sigma scaling would double-suppress
+    # early steps; keep it only for plain SGD where raw magnitude grows with sigma.
     if sigma_t is not None and (adam_state is None or adam_mode == 'none'):
         effective_alpha = alpha / (1.0 + float(sigma_t))
     else:
         effective_alpha = alpha
 
-    if adam_mode == 'adamw' and adam_state is not None:
-        # Decoupled weight decay: applied to x0_hat directly, not folded into
-        # the moment estimates. Pulls the corrected estimate toward zero
-        # (the latent-space origin ≈ "no structure") — a mild regulariser
-        # that stops the trajectory from drifting far from T₀.
-        x0_corrected = (x0_hat * (1.0 - effective_alpha * adam_wd)
-                        - effective_alpha * effective_grad).detach()
+    # --- Adam / AdamW via torch.optim ------------------------------------------
+    # Each diffusion step is one optimizer iteration. torch.optim.Adam/AdamW
+    # owns the moment state; we inject the SURE gradient by assigning .grad
+    # directly and calling .step() — no backward pass required.
+    #
+    # torch.optim.AdamW uses decoupled weight decay (Loshchilov & Hutter 2019):
+    #   param ← param·(1 − lr·wd) − lr·m̂/(√v̂ + ε)
+    # which matches our previous manual formulation exactly.
+    if adam_state is not None and adam_mode in ('adam', 'adamw'):
+        if adam_state['optimizer'] is None:
+            # Lazy init on first step once we know tensor shape and device
+            param = x0_hat.detach().clone().requires_grad_(True)
+            if adam_mode == 'adamw':
+                opt = torch.optim.AdamW(
+                    [param], lr=effective_alpha,
+                    betas=(adam_beta1, adam_beta2),
+                    eps=adam_eps, weight_decay=adam_wd,
+                )
+            else:
+                opt = torch.optim.Adam(
+                    [param], lr=effective_alpha,
+                    betas=(adam_beta1, adam_beta2),
+                    eps=adam_eps, weight_decay=0.0,
+                )
+            adam_state['optimizer'] = opt
+            adam_state['param'] = param
+
+        param = adam_state['param']
+        opt   = adam_state['optimizer']
+
+        # Update lr (effective_alpha can vary per step when sigma scaling is off)
+        for pg in opt.param_groups:
+            pg['lr'] = effective_alpha
+
+        # Load current x0_hat into the persistent leaf tensor, inject gradient
+        param.data.copy_(x0_hat.detach())
+        param.grad = grad.detach()
+
+        x_before = param.data.clone()
+        opt.step()
+        x0_corrected = param.data.detach().clone()
+
+        step_delta = x_before - x0_corrected
+        # step_rms = actual magnitude Adam applied (lr * adaptive_grad per pixel)
+        _step_rms = float((step_delta ** 2).mean() ** 0.5)
+        # effective_grad for adam_ratio logging: what Adam compressed the raw grad to
+        effective_grad = step_delta / (effective_alpha + 1e-12)
     else:
+        effective_grad = grad
         x0_corrected = (x0_hat - effective_alpha * effective_grad).detach()
+        _step_rms = effective_alpha * float((effective_grad ** 2).mean() ** 0.5)
 
     _eff_grad_rms = float((effective_grad ** 2).mean() ** 0.5)
     _raw_grad_rms = float((grad ** 2).mean() ** 0.5)
     _sure_logger.info(
-        "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  eff_alpha=%.5f  "
+        "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  lr=%.5f  step_rms=%.5f  "
         "sure=%.4f  jac_trace=%s  residual_rms=%.5f  grad_rms=%.5f  "
         "eff_grad_rms=%.5f  adam_ratio=%.4f",
-        eps, sigma_hat_0, float(sigma_p), effective_alpha,
+        eps, sigma_hat_0, float(sigma_p), effective_alpha, _step_rms,
         sure_val,
         f"{jac_trace:.4f}" if jac_trace is not None else "n/a",
         float((residual ** 2).mean() ** 0.5),
@@ -5173,7 +5174,7 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
     _EMA_A = 0.35
     _dyn_jac_interval: int        = max(1, sure_jac_interval)
     _jac_ratio_ema:   float | None = None
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
 
     n_steps = len(sigmas) - 1
     _sure_logger.info(
@@ -5321,7 +5322,7 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
 
     # jac_interval tracking (fixed for adaptive sampler — not adaptive, to keep control predictable)
     _corr_count = 0
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
 
     with tqdm(disable=disable) as pbar:
         while s < t_end - 1e-5:
