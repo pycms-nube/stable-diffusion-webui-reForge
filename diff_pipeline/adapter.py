@@ -308,7 +308,15 @@ class _DiffusersUnetModel:
         return self.diffusion_model.parameters(*args, **kwargs)
 
     def to(self, *args, **kwargs):
-        self.diffusion_model.to(*args, **kwargs)
+        # With sequential CPU offload the UNet weights live on meta device and
+        # are managed by diffusers hooks. Calling .to() on meta tensors raises
+        # NotImplementedError, so skip the move when offload hooks are present.
+        try:
+            first_param = next(self.diffusion_model.parameters(), None)
+        except StopIteration:
+            first_param = None
+        if first_param is None or first_param.device.type != "meta":
+            self.diffusion_model.to(*args, **kwargs)
         return self
 
     def train(self, mode=True):
@@ -723,7 +731,9 @@ def _encode_prompts(pipe, prompts: list[str]):
 
     For SD1.5/SD2 models (no tokenizer_2) only 'crossattn' is returned.
     """
-    device = next(pipe.unet.parameters()).device
+    device = getattr(pipe, "_execution_device", None) or next(
+        (p.device for p in pipe.unet.parameters() if p.device.type != "meta"), None
+    ) or torch.device("cpu")
 
     tokenizers    = []
     text_encoders = []
