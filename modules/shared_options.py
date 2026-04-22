@@ -791,6 +791,8 @@ options_templates.update(options_section(('sampler-params', "reForge Sampler Par
     "sure_adam_beta1": OptionInfo(0.9, "SURE - adam_beta1 (first-moment decay)", gr.Slider, {"minimum": 0.5, "maximum": 0.999, "step": 0.001}, infotext='SURE adam_beta1').info('Default = 0.9; momentum decay for running gradient mean — higher = more inertia across steps'),
     "sure_adam_beta2": OptionInfo(0.999, "SURE - adam_beta2 (second-moment decay)", gr.Slider, {"minimum": 0.9, "maximum": 0.9999, "step": 0.0001}, infotext='SURE adam_beta2').info('Default = 0.999; decay for running gradient variance — controls per-pixel step-size adaptation'),
     "sure_adam_wd": OptionInfo(0.01, "SURE - adam_wd (AdamW weight decay)", gr.Slider, {"minimum": 0.0, "maximum": 0.1, "step": 0.001}, infotext='SURE adam_wd').info('Default = 0.01; AdamW only — decoupled weight decay pulling x̂₀ toward zero each step; has no effect when adam_mode is none or adam'),
+    "sure_wavelet": OptionInfo("db4", "SURE-Wavelet - wavelet (PyWavelets orthogonal wavelet)", gr.Dropdown, {"choices": ["haar", "db2", "db4", "db6", "db8", "sym4", "sym6", "bior2.2", "bior4.4"]}, infotext='SURE wavelet').info('Orthogonal wavelet for SURE-Wavelet sampler; db4 is a good default — haar = sharpest but blocky, higher db/sym = smoother frequency separation'),
+    "sure_wavelet_level": OptionInfo(3, "SURE-Wavelet - level (decomposition levels)", gr.Slider, {"minimum": 1, "maximum": 6, "step": 1}, infotext='SURE wavelet_level').info('Default = 3; number of DWT levels — more levels = finer frequency band separation; each level halves spatial resolution of the approximation'),
 
     # DC-Solver Parameters
     "dc_solver_group": OptionHTML("<br><h3>DC-Solver Settings</h3>"),
