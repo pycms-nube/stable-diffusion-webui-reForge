@@ -4946,51 +4946,85 @@ def _sure_correct(model, x, sigma, s_in, extra_args, alpha=0.1, n_mc=1, eps_mc=1
 
 @functools.lru_cache
 def _pca_noise_estimate(x0_hat, patch_size=8, min_sigma=1e-3):
-    """PCA-based residual noise level estimation per Algorithm 1 of SGPS.
+    """PCA noise estimation via Marchenko-Pastur bulk threshold.
 
-    Extracts spatial patches from x0_hat, computes the patch covariance matrix,
-    and iteratively excludes the largest eigenvalues until mean ≈ median of the
-    remaining set.  Returns σ̂₀ = √τ clamped to [min_sigma, ∞).
+    Replaces the old mean≈median heuristic with a theoretically grounded
+    random-matrix estimator.  For a covariance matrix built from n_patches
+    patches of dimension dim, pure-noise eigenvalues lie in the Marchenko-Pastur
+    bulk  [0, σ²·(1+√γ)²]  where γ = dim/n_patches.  We iteratively solve for
+    the noise variance σ² as the mean of the bulk eigenvalues.
 
-    Operates on the first batch item; shape (B, C, H, W) → scalar float.
+    Two additional robustness improvements over the original:
+      • Adaptive patch_size: halves until n_patches > dim (γ < 1), keeping the
+        sample covariance full-rank.  This matters for small latents (SD1.5
+        64×64) where the default patch_size=8 would give γ = 4.
+      • All batch items: estimates are averaged across the batch rather than
+        using only item 0, giving a lower-variance estimate with batch > 1.
+
+    Shape: (B, C, H, W) → scalar float.
     """
-    img = x0_hat[0].detach().float()   # (C, H, W)
+    estimates = []
+    for b in range(x0_hat.shape[0]):
+        estimates.append(_pca_noise_single(x0_hat[b].detach().float(),
+                                           patch_size, min_sigma))
+    return float(sum(estimates) / len(estimates)) if estimates else min_sigma
+
+
+def _pca_noise_single(img, patch_size=8, min_sigma=1e-3):
+    """Marchenko-Pastur noise estimate for one (C, H, W) tensor."""
     C, H, W = img.shape
 
-    ph = H // patch_size
-    pw = W // patch_size
+    # ── Adaptive patch_size: ensure n_patches > dim (γ < 1) ─────────────────
+    ps = patch_size
+    while ps > 2:
+        ph = H // ps
+        pw = W // ps
+        if ph * pw > C * ps * ps:   # n_patches > dim → γ < 1, well-conditioned
+            break
+        ps = ps // 2
+
+    ph = H // ps
+    pw = W // ps
     if ph < 2 or pw < 2:
         return min_sigma
 
-    # Extract non-overlapping patches → (n_patches, C*patch_size*patch_size)
-    cropped = img[:, :ph * patch_size, :pw * patch_size]          # (C, ph*p, pw*p)
-    unf = cropped.unfold(1, patch_size, patch_size).unfold(2, patch_size, patch_size)
-    # unf: (C, ph, pw, patch_size, patch_size)
-    patches = unf.permute(1, 2, 0, 3, 4).reshape(ph * pw, C * patch_size * patch_size)
+    n_patches = ph * pw
+    dim       = C * ps * ps
 
-    n_patches, dim = patches.shape
-    if n_patches < 2 or dim < 2:
-        return min_sigma
+    # ── Non-overlapping patches ───────────────────────────────────────────────
+    cropped = img[:, :ph * ps, :pw * ps]
+    unf     = cropped.unfold(1, ps, ps).unfold(2, ps, ps)
+    patches = unf.permute(1, 2, 0, 3, 4).reshape(n_patches, dim)
 
-    # Covariance and eigenvalues (descending)
-    mu = patches.mean(0, keepdim=True)
+    # ── Sample covariance eigenvalues ─────────────────────────────────────────
+    mu      = patches.mean(0, keepdim=True)
     centered = patches - mu
-    cov = (centered.T @ centered) / (n_patches - 1)   # (dim, dim)
+    cov     = (centered.T @ centered) / (n_patches - 1)   # (dim, dim)
     try:
-        eigvals = torch.linalg.eigvalsh(cov).flip(0).clamp(min=0.0)
+        eigvals = torch.linalg.eigvalsh(cov).clamp(min=0.0)   # ascending
     except Exception:
         return min_sigma
 
-    r = len(eigvals)
-    tau = float(eigvals.mean())
-    for i in range(r - 1):
-        remaining = eigvals[i:]
-        tau = float(remaining.mean())
-        median_val = float(remaining.median())
-        if abs(tau - median_val) / (abs(median_val) + 1e-8) < 0.1:
-            break
+    # ── Marchenko-Pastur bulk threshold ───────────────────────────────────────
+    # γ = dim/n_patches < 1 by construction above.
+    # Bulk upper edge: λ_+ = σ²·(1 + √γ)²
+    # Iterate: σ² ← mean of eigenvalues in [0, λ_+] until convergence.
+    gamma      = dim / n_patches          # < 1
+    mp_edge_k  = (1.0 + gamma ** 0.5) ** 2   # λ_+ = σ² × mp_edge_k
 
-    return max(float(tau ** 0.5), min_sigma)
+    sigma2 = float(eigvals.mean())        # initial estimate: full mean
+    for _ in range(20):
+        bulk = eigvals[eigvals <= sigma2 * mp_edge_k]
+        if len(bulk) == 0:
+            sigma2 = float(eigvals.min())
+            break
+        sigma2_new = float(bulk.mean())
+        if abs(sigma2_new - sigma2) / (abs(sigma2) + 1e-10) < 1e-5:
+            sigma2 = sigma2_new
+            break
+        sigma2 = sigma2_new
+
+    return max(float(sigma2 ** 0.5), min_sigma)
 
 
 def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
@@ -4998,7 +5032,9 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
                      sigma_t=None,
                      adam_state=None, adam_mode='none',
                      adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
-                     adam_wd=0.01, grad_mode='vjp'):
+                     adam_wd=0.01, grad_mode='vjp',
+                     approx_coeff=2.0,
+                     csv_writer=None, step_idx=None):
     """SURE gradient correction per Algorithm 1 of arXiv:2512.23232.
 
     grad_mode controls how ∇SURE is computed:
@@ -5022,10 +5058,14 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
       tr{J}  ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) · ε^{-1}   [scalar, MC averaged]
       SURE   = −n·σ̂₀² + ‖xnoisy − x̂‖² + 2·σ̂₀²·tr{J}             [logged only]
 
-    adam_state: dict with keys 'optimizer' (torch.optim.Adam/AdamW) and 'param'
+    adam_state: dict with keys 'optimizer' (torch.optim instance) and 'param'
                 (leaf tensor) — mutated in-place across steps via optimizer.step().
                 Pass None to use plain gradient descent (default behaviour).
     adam_mode:  'none' = plain SGD, 'adam' = Adam, 'adamw' = AdamW.
+                RAdam/RAdamW were removed: with β₂=0.999 and only ~60 diffusion
+                steps, ρ_t barely clears the SGD-fallback threshold (ρ_∞=5) by
+                step 6 and the variance-rectification factor rect≈0.021 at that
+                point — effectively zero adaptive correction for the whole run.
     adam_beta1: first-moment decay (default 0.9).
     adam_beta2: second-moment decay (default 0.999).
     adam_eps:   denominator stabiliser (default 1e-8).
@@ -5073,7 +5113,7 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
         with torch.no_grad():
             x_hat = model(x_in, sigma_denoiser * s_in, **extra_args).detach()
         residual = x_in - x_hat
-        grad = 2.0 * residual           # stop-gradient approximation
+        grad = approx_coeff * residual  # stop-gradient approximation
         grad_jac_base_sum = None
     else:
         # Gradient checkpointing: recompute activations during backward instead
@@ -5150,6 +5190,10 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
             del grad_jac_pert_sum, grad_jac_base_sum
     x0_std = x0_hat.std().item()
     gs     = grad.std().item()
+    # Clamp before Adam: Adam's v_t accumulates grad², so a single outlier step
+    # (e.g. huge SURE residual at step 0) inflates v_t and suppresses all future
+    # updates for the rest of the run.  Normalising to x0_std then hard-clamping
+    # to ±3σ keeps v_t in a reliable range without discarding gradient direction.
     if gs > x0_std > 0.0:
         grad = grad * (x0_std / gs)
     grad = grad.clamp(-3.0 * x0_std, 3.0 * x0_std)
@@ -5214,8 +5258,10 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
         x0_corrected = (x0_hat - effective_alpha * effective_grad).detach()
         _step_rms = effective_alpha * float((effective_grad ** 2).mean() ** 0.5)
 
-    _eff_grad_rms = float((effective_grad ** 2).mean() ** 0.5)
-    _raw_grad_rms = float((grad ** 2).mean() ** 0.5)
+    _eff_grad_rms  = float((effective_grad ** 2).mean() ** 0.5)
+    _raw_grad_rms  = float((grad ** 2).mean() ** 0.5)
+    _residual_rms  = float((residual ** 2).mean() ** 0.5)
+    _adam_ratio    = _eff_grad_rms / (_raw_grad_rms + 1e-8)
     _sure_logger.info(
         "[sure_x0] eps=%.5f  sigma_hat_0=%.5f  sigma_p=%.5f  lr=%.5f  step_rms=%.5f  "
         "sure=%.4f  jac_trace=%s  residual_rms=%.5f  grad_rms=%.5f  "
@@ -5223,11 +5269,26 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
         eps, sigma_hat_0, float(sigma_p), effective_alpha, _step_rms,
         sure_val,
         f"{jac_trace:.4f}" if jac_trace is not None else "n/a",
-        float((residual ** 2).mean() ** 0.5),
+        _residual_rms,
         _raw_grad_rms,
         _eff_grad_rms,
-        _eff_grad_rms / (_raw_grad_rms + 1e-8),
+        _adam_ratio,
     )
+
+    if csv_writer is not None and grad_mode == 'approx':
+        csv_writer.writerow([
+            step_idx,
+            f"{sigma_hat_0:.6f}",
+            f"{float(sigma_t):.6f}" if sigma_t is not None else "",
+            f"{approx_coeff:.4f}",
+            f"{_residual_rms:.6f}",
+            f"{sure_val:.6f}",
+            f"{_raw_grad_rms:.6f}",
+            f"{_eff_grad_rms:.6f}",
+            f"{effective_alpha:.6f}",
+            f"{_step_rms:.6f}",
+            f"{_adam_ratio:.6f}",
+        ])
 
     return x0_corrected, {'jac_ratio': None}
 
@@ -5238,7 +5299,8 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
                               adam_state=None, adam_mode='none',
                               adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
                               adam_wd=0.01,
-                              wavelet='db4', wavelet_level=3):
+                              wavelet='db4', wavelet_level=3,
+                              approx_coeff=2.0, warmup_steps=0):
     """SURE-Wavelet: per-subband SURE gradient correction.
 
     Decomposes x0_hat into orthogonal 2D wavelet subbands via ptwt.wavedec2,
@@ -5341,21 +5403,18 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
 
     # ── Init per-subband Adam state on first call ────────────────────────────
     # Index 0 → approximation tensor; indices 1..L → detail tuples (H, V, D)
-    # In addition to per-element gradient moments (wavelet_m / wavelet_v),
-    # we maintain per-subband scalar tier_scale moments (scale_m / scale_v)
-    # so Adam can independently adapt the correction strength for each band.
+    # Stores per-element moments (wavelet_m / wavelet_v) only; correction
+    # magnitude is fixed at base_alpha — no adaptive tier_scale (ts_val) scalar.
+    # ts_val was removed because it adapted via ts_val *= exp(-alpha * ts_step)
+    # where ts_step = -sure_val / (n_elem * σ²).  sure_val is always large-
+    # positive at high σ, so ts_step is always negative → ts_val grew without
+    # bound every step, causing pixel_delta_rms to diverge monotonically.
     n_sb = len(residual_coeffs)
     if adam_state is not None and adam_mode in ('adam', 'adamw'):
         if 'wavelet_m' not in adam_state:
-            adam_state['wavelet_m']   = [None] * n_sb
-            adam_state['wavelet_v']   = [None] * n_sb
-            adam_state['wavelet_t']   = 0
-            # tier_scale: per-subband correction strength, learned by Adam.
-            # Approximation → 1 scalar; each detail level → 3 scalars (H/V/D).
-            # Initialised at alpha so the first step matches plain SURE.
-            adam_state['scale_val']   = [[alpha] * (1 if i == 0 else 3) for i in range(n_sb)]
-            adam_state['scale_m']     = [[0.0]   * (1 if i == 0 else 3) for i in range(n_sb)]
-            adam_state['scale_v']     = [[0.0]   * (1 if i == 0 else 3) for i in range(n_sb)]
+            adam_state['wavelet_m'] = [None] * n_sb
+            adam_state['wavelet_v'] = [None] * n_sb
+            adam_state['wavelet_t'] = 0
             _sure_logger.debug("[sure_wavelet] adam state initialised  n_sb=%d", n_sb)
         adam_state['wavelet_t'] += 1
         t_adam = adam_state['wavelet_t']
@@ -5365,7 +5424,10 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
 
     x0_std = x0_hat.std().item()
 
-    # Base alpha: sigma-scaled for plain SGD, flat when Adam manages tier_scale.
+    # Base alpha: sigma-scaled for plain SGD only; flat when Adam is active.
+    # Adam's per-element m/v normalisation already suppresses large early-step
+    # gradients — adding sigma scaling on top would double-suppress step 0 and
+    # under-correct at late steps where sigma_t is near zero.
     if sigma_t is not None and (adam_state is None or adam_mode == 'none'):
         base_alpha = alpha / (1.0 + float(sigma_t))
     else:
@@ -5377,17 +5439,20 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
         f"{float(sigma_t):.4f}" if sigma_t is not None else "n/a",
     )
 
-    # ── Inner helper: apply SURE gradient + adapt tier_scale via Adam ─────────
-    # ts_val  : current scalar tier_scale for this subband (float).
-    # ts_m/v  : Adam first/second moment for tier_scale (float scalars).
-    # sure_sb : scalar SURE loss for this subband — gradient signal for ts_val.
-    # n_elem  : number of elements in this subband coefficient tensor.
-    def _correct_coeff(x0_c, res_c, m_c, v_c, ts_val, ts_m, ts_v, sure_sb, n_elem):
-        grad = 2.0 * res_c
+    # ── Inner helper: apply SURE gradient to each subband ────────────────────
+    # Correction magnitude is fixed at base_alpha * warmup_factor.
+    # Adam adapts per-element direction only via m/v moments — no outer scalar.
+    # A scalar tier_scale loop was tried (ts_val) but diverged: its gradient was
+    # derived from sure_val which is always positive at high σ, making the update
+    # always push ts_val in one direction → unbounded exponential growth.
+    # RAdam was also tried as an alternative warmup mechanism: with β₂=0.999 and
+    # ~60 diffusion steps, ρ_t never grows large enough — rect factor ≈ 0.021 at
+    # step 6, effectively zeroing corrections until step ~100 which never arrives.
+    def _correct_coeff(x0_c, res_c, m_c, v_c):
+        grad = approx_coeff * res_c
         raw_grad_rms = float((grad ** 2).mean() ** 0.5)
 
         if adam_state is not None and adam_mode in ('adam', 'adamw'):
-            # ── Update per-element gradient moments ──────────────────────────
             if m_c is None:
                 m_c = torch.zeros_like(grad)
                 v_c = torch.zeros_like(grad)
@@ -5396,38 +5461,25 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
             bc1   = 1.0 - adam_beta1 ** t_adam
             bc2   = 1.0 - adam_beta2 ** t_adam
             eff_g = (m_c / bc1) / ((v_c / bc2).sqrt() + adam_eps)
-
-            # ── Update tier_scale via its own Adam moments ────────────────────
-            # Gradient signal: −SURE_sb / (n·σ²).
-            #   sure_sb > 0 → under-correcting → grad_ts < 0 → ts_step < 0
-            #   sure_sb < 0 → over-correcting  → grad_ts > 0 → ts_step > 0
-            # Multiplicative (log-space) update: ts_val *= exp(−lr·ts_step).
-            #   • Always positive — no lower clamp needed.
-            #   • Scale-free: step is proportional to current ts_val.
-            #   • Adam 2nd moment handles per-subband gradient variance.
-            #   • base_alpha is the log-space lr: ×exp(±base_alpha) per step,
-            #     so max ~exp(30·0.05)=4.5× drift from init over 30 steps.
-            grad_ts = -sure_sb / (n_elem * max(sigma2, 1e-8))
-            ts_m    = adam_beta1 * ts_m + (1.0 - adam_beta1) * grad_ts
-            ts_v    = adam_beta2 * ts_v + (1.0 - adam_beta2) * grad_ts ** 2
-            ts_step = (ts_m / bc1) / (max(ts_v / bc2, 0.0) ** 0.5 + adam_eps)
-            ts_val  = ts_val * math.exp(-base_alpha * ts_step)
         else:
-            eff_g  = grad
-            m_c    = None
-            v_c    = None
-            ts_val = base_alpha   # fixed when Adam is off
-            ts_m   = 0.0
-            ts_v   = 0.0
+            eff_g = grad
+            m_c   = None
+            v_c   = None
 
         eff_grad_rms = float((eff_g ** 2).mean() ** 0.5)
         adam_ratio   = eff_grad_rms / (raw_grad_rms + 1e-8)
 
+        # Linear warmup: ramps correction from 0 → base_alpha over warmup_steps.
+        # RAdam's built-in warmup (variance rectification) was tried instead but
+        # fails here — ρ_t requires ~100+ steps to rectify fully with β₂=0.999,
+        # and diffusion schedules only have ~60 steps total.
+        warmup_factor = min(1.0, t_adam / warmup_steps) if warmup_steps > 0 else 1.0
+        step = base_alpha * warmup_factor
         if adam_mode == 'adamw' and adam_state is not None:
-            corrected = (x0_c * (1.0 - ts_val * adam_wd) - ts_val * eff_g).detach()
+            corrected = (x0_c * (1.0 - step * adam_wd) - step * eff_g).detach()
         else:
-            corrected = (x0_c - ts_val * eff_g).detach()
-        return corrected, m_c, v_c, ts_val, ts_m, ts_v, raw_grad_rms, eff_grad_rms, adam_ratio
+            corrected = (x0_c - step * eff_g).detach()
+        return corrected, m_c, v_c, raw_grad_rms, eff_grad_rms, adam_ratio
 
     # ── Per-subband correction ───────────────────────────────────────────────
     corrected_coeffs  = []
@@ -5437,40 +5489,23 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
         x0_sb  = x0_coeffs[sb_idx]
         res_sb = residual_coeffs[sb_idx]
 
-        def _get_scale(i, sub=0):
-            if adam_state and 'scale_val' in adam_state:
-                return (adam_state['scale_val'][i][sub],
-                        adam_state['scale_m'][i][sub],
-                        adam_state['scale_v'][i][sub])
-            return base_alpha, 0.0, 0.0
-
-        def _put_scale(i, sub, ts_val, ts_m, ts_v):
-            if adam_state and 'scale_val' in adam_state:
-                adam_state['scale_val'][i][sub] = ts_val
-                adam_state['scale_m'][i][sub]   = ts_m
-                adam_state['scale_v'][i][sub]   = ts_v
-
         if sb_idx == 0:
             # Approximation subband — low-frequency / residual (R)
             m0 = adam_state['wavelet_m'][0] if (adam_state and 'wavelet_m' in adam_state) else None
             v0 = adam_state['wavelet_v'][0] if (adam_state and 'wavelet_v' in adam_state) else None
-            ts_val, ts_m, ts_v = _get_scale(0)
             sb_sure = float(-res_sb.numel() * sigma2 + (res_sb ** 2).sum())
-            c_corr, m0_new, v0_new, ts_val, ts_m, ts_v, rg_rms, eg_rms, ar = _correct_coeff(
-                x0_sb, res_sb, m0, v0, ts_val, ts_m, ts_v, sb_sure, res_sb.numel()
-            )
+            c_corr, m0_new, v0_new, rg_rms, eg_rms, ar = _correct_coeff(x0_sb, res_sb, m0, v0)
             if adam_state is not None and 'wavelet_m' in adam_state:
                 adam_state['wavelet_m'][0] = m0_new
                 adam_state['wavelet_v'][0] = v0_new
-            _put_scale(0, 0, ts_val, ts_m, ts_v)
             corrected_coeffs.append(c_corr)
             sure_subband_vals.append(sb_sure)
             _sure_logger.debug(
                 "[sure_wavelet]   sb=R  shape=%s  res_rms=%.5f  sure=%.4f  "
-                "tier_scale=%.5f  grad_rms=%.5f  eff_grad_rms=%.5f  adam_ratio=%.3f  delta_rms=%.5f",
+                "grad_rms=%.5f  eff_grad_rms=%.5f  adam_ratio=%.3f  delta_rms=%.5f",
                 tuple(res_sb.shape),
                 float((res_sb ** 2).mean() ** 0.5),
-                sb_sure, ts_val, rg_rms, eg_rms, ar,
+                sb_sure, rg_rms, eg_rms, ar,
                 float(((c_corr - x0_sb) ** 2).mean() ** 0.5),
             )
         else:
@@ -5489,24 +5524,21 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
             new_v       = []
             _sub_names  = ('H', 'V', 'D')
             for sub_i in range(3):      # H, V, D
-                ts_val, ts_m, ts_v = _get_scale(sb_idx, sub_i)
                 sb_sure = float(-res_sb[sub_i].numel() * sigma2 + (res_sb[sub_i] ** 2).sum())
-                c_corr, m_new, v_new, ts_val, ts_m, ts_v, rg_rms, eg_rms, ar = _correct_coeff(
+                c_corr, m_new, v_new, rg_rms, eg_rms, ar = _correct_coeff(
                     x0_sb[sub_i], res_sb[sub_i], prev_m[sub_i], prev_v[sub_i],
-                    ts_val, ts_m, ts_v, sb_sure, res_sb[sub_i].numel()
                 )
                 detail_corr.append(c_corr)
                 new_m.append(m_new)
                 new_v.append(v_new)
-                _put_scale(sb_idx, sub_i, ts_val, ts_m, ts_v)
                 sure_subband_vals.append(sb_sure)
                 _sure_logger.debug(
                     "[sure_wavelet]   sb=L%d_%s  shape=%s  res_rms=%.5f  sure=%.4f  "
-                    "tier_scale=%.5f  grad_rms=%.5f  eff_grad_rms=%.5f  adam_ratio=%.3f  delta_rms=%.5f",
+                    "grad_rms=%.5f  eff_grad_rms=%.5f  adam_ratio=%.3f  delta_rms=%.5f",
                     sb_idx, _sub_names[sub_i],
                     tuple(res_sb[sub_i].shape),
                     float((res_sb[sub_i] ** 2).mean() ** 0.5),
-                    sb_sure, ts_val, rg_rms, eg_rms, ar,
+                    sb_sure, rg_rms, eg_rms, ar,
                     float(((c_corr - x0_sb[sub_i]) ** 2).mean() ** 0.5),
                 )
 
@@ -5526,17 +5558,9 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
 
     pixel_delta_rms = float(((x0_corrected - x0_hat) ** 2).mean() ** 0.5)
 
-    # Collect tier_scale summary for health monitoring
-    if adam_state is not None and 'scale_val' in adam_state:
-        ts_R      = adam_state['scale_val'][0][0]
-        ts_detail = [v for i in range(1, n_sb) for v in adam_state['scale_val'][i]]
-        ts_min, ts_max = min(ts_detail), max(ts_detail)
-    else:
-        ts_R = ts_min = ts_max = base_alpha
-
     _sure_logger.info(
-        "[wavelet] total_sure=%.1f  pixel_δ=%.5f  ts R=%.4f  detail=[%.4f,%.4f]",
-        total_sure, pixel_delta_rms, ts_R, ts_min, ts_max,
+        "[wavelet] total_sure=%.1f  pixel_δ=%.5f  base_alpha=%.5f",
+        total_sure, pixel_delta_rms, base_alpha,
     )
 
     return x0_corrected, {'sure_val': total_sure, 'jac_ratio': None,
@@ -5547,7 +5571,9 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                 sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                 sure_jac_interval=2,
                 sure_adam_mode='none', sure_adam_beta1=0.9,
-                sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
+                sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp',
+                sure_approx_coeff=2.0, sure_csv_path=None,
+                sure_sigma_ema=0.0):
     """SURE Guided Posterior Sampling (SGPS) — Euler Ancestral variant.
 
     Implements Algorithm 1 from arXiv:2512.23232 directly.  Every step:
@@ -5564,6 +5590,7 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
     sure_eps:          finite-difference epsilon for MC Jacobian
     sure_jac_interval: compute full Jacobian every N steps; adapt from jac_ratio
     """
+    import csv as _csv
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed)
@@ -5573,11 +5600,25 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
     _dyn_jac_interval: int        = max(1, sure_jac_interval)
     _jac_ratio_ema:   float | None = None
     _adam_state = {'optimizer': None, 'param': None} if sure_adam_mode != 'none' else None
+    _sigma_hat_0_ema: float | None = None   # EMA state for PCA noise estimate
+
+    # CSV setup — only active in approx mode
+    _csv_file   = None
+    _csv_writer = None
+    if sure_csv_path is not None and sure_grad_mode == 'approx':
+        _csv_file = open(sure_csv_path, 'w', newline='')
+        _csv_writer = _csv.writer(_csv_file)
+        _csv_writer.writerow([
+            'step', 'sigma_hat_0', 'sigma_t', 'approx_coeff',
+            'residual_rms', 'sure_val', 'raw_grad_rms', 'eff_grad_rms',
+            'effective_alpha', 'step_rms', 'adam_ratio',
+        ])
+        _sure_logger.info("SURE approx CSV: writing per-step stats to %s", sure_csv_path)
 
     n_steps = len(sigmas) - 1
     _sure_logger.info(
-        "SURE sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d  adam=%s",
-        n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval, sure_adam_mode,
+        "SURE sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d  adam=%s  approx_coeff=%.4f",
+        n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval, sure_adam_mode, sure_approx_coeff,
     )
 
     for i in trange(n_steps, disable=disable):
@@ -5589,8 +5630,23 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
         with torch.no_grad():
             x0_hat = model(x, sigma * s_in, **extra_args).detach()
 
-        # ── Step 2: PCA residual noise estimate ───────────────────────────────
-        sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
+        # ── Step 2: PCA residual noise estimate (+ ceiling + optional EMA) ──────
+        _sigma_raw = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
+        # Hard ceiling: residual noise in x̂₀ cannot exceed the diffusion noise
+        # added at time t. Without this, the M-P estimator mistakes fine image
+        # detail for noise at late steps (small sigma_t), causing the denoiser
+        # to be called at a wildly wrong sigma and sure_val to blow up negative.
+        _sigma_raw = min(_sigma_raw, float(sigma_val))
+        if sure_sigma_ema > 0.0:
+            if _sigma_hat_0_ema is None:
+                _sigma_hat_0_ema = _sigma_raw
+            else:
+                _sigma_hat_0_ema = sure_sigma_ema * _sigma_hat_0_ema + (1.0 - sure_sigma_ema) * _sigma_raw
+            # EMA memory can lag above the current sigma_t as sigma_t collapses
+            # at late steps — clamp the output too, not just the raw estimate.
+            sigma_hat_0 = min(_sigma_hat_0_ema, float(sigma_val))
+        else:
+            sigma_hat_0 = _sigma_raw
 
         # ── Step 3: SURE gradient correction on x0_hat at σ̂₀ ─────────────────
         _use_jac = (_dyn_jac_interval <= 1) or (i % _dyn_jac_interval == 0)
@@ -5601,6 +5657,8 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
             adam_state=_adam_state, adam_mode=sure_adam_mode,
             adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
             adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
+            approx_coeff=sure_approx_coeff,
+            csv_writer=_csv_writer, step_idx=i,
         )
 
         # Adapt jac_interval from jac_ratio EMA
@@ -5637,6 +5695,11 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
             x = x + d * (sigma_down - sigma)
             x = x + sigma_up * noise_sampler(sigma, sigma_next)
 
+    if _csv_file is not None:
+        _csv_file.flush()
+        _csv_file.close()
+        _sure_logger.info("SURE approx CSV: closed %s", sure_csv_path)
+
     if x.device.type == "cuda":
         torch.cuda.empty_cache()
 
@@ -5648,7 +5711,9 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
                         sure_jac_interval=2,
                         sure_adam_mode='none', sure_adam_beta1=0.9,
                         sure_adam_beta2=0.999, sure_adam_wd=0.01,
-                        sure_wavelet='db4', sure_wavelet_level=3):
+                        sure_wavelet='db4', sure_wavelet_level=3,
+                        sure_approx_coeff=2.0, sure_csv_path=None,
+                        sure_sigma_ema=0.0, sure_wavelet_warmup_steps=0):
     """SURE-Wavelet — Euler Ancestral variant.
 
     Identical control flow to sample_sure, but replaces pixel-space SURE
@@ -5665,6 +5730,7 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
     sure_wavelet       : PyWavelets orthogonal wavelet name (default 'db4').
     sure_wavelet_level : number of DWT decomposition levels (default 3).
     """
+    import csv as _csv
     extra_args    = {} if extra_args is None else extra_args
     seed          = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed)
@@ -5673,14 +5739,27 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
     _EMA_A = 0.35
     _dyn_jac_interval: int         = max(1, sure_jac_interval)
     _jac_ratio_ema:   float | None = None
-    _adam_state = {'m': None, 'v': None, 't': 0} if sure_adam_mode != 'none' else None
+    _adam_state = {} if sure_adam_mode != 'none' else None
+    _sigma_hat_0_ema: float | None = None
+
+    # CSV output (aggregate per-step metrics, wavelet mode)
+    _csv_fh     = None
+    _csv_writer = None
+    if sure_csv_path:
+        _csv_fh = open(sure_csv_path, 'w', newline='')
+        _csv_writer = _csv.writer(_csv_fh)
+        _csv_writer.writerow([
+            'step', 'sigma_hat_0', 'sigma_t', 'approx_coeff',
+            'sure_val', 'pixel_delta_rms', 'effective_alpha',
+        ])
 
     n_steps = len(sigmas) - 1
     _sure_logger.info(
         "SURE-Wavelet sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d  "
-        "wavelet=%s  level=%d  adam=%s",
+        "wavelet=%s  level=%d  adam=%s  approx_coeff=%.2f  sigma_ema=%.2f  warmup=%d",
         n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval,
         sure_wavelet, sure_wavelet_level, sure_adam_mode,
+        sure_approx_coeff, sure_sigma_ema, sure_wavelet_warmup_steps,
     )
 
     for i in trange(n_steps, disable=disable):
@@ -5692,12 +5771,28 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
         with torch.no_grad():
             x0_hat = model(x, sigma * s_in, **extra_args).detach()
 
-        # ── Step 2: PCA residual noise estimate ───────────────────────────────
-        sigma_hat_0 = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
+        # ── Step 2: PCA residual noise estimate + sigma_t ceiling + EMA ──────
+        _sigma_raw = _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps))
+        # Clamp 1 — hard ceiling: M-P bulk eigenvalue can exceed sigma_t at late
+        # steps where the denoised x̂₀ contains fine detail the estimator mistakes
+        # for noise.  Without this, the SURE denoiser call uses a wrong σ̂₀ and
+        # sure_val blows up negative, destabilising Adam's moment state.
+        _sigma_raw = min(_sigma_raw, sigma_val)
+        if sure_sigma_ema > 0.0:
+            if _sigma_hat_0_ema is None:
+                _sigma_hat_0_ema = _sigma_raw
+            else:
+                _sigma_hat_0_ema = sure_sigma_ema * _sigma_hat_0_ema + (1.0 - sure_sigma_ema) * _sigma_raw
+            # Clamp 2 — EMA lag: the smoothed estimate can remain above sigma_t
+            # for several steps after sigma_t collapses near the end of sampling.
+            # Clamping the EMA output (not just the raw input) closes that gap.
+            sigma_hat_0 = min(_sigma_hat_0_ema, sigma_val)
+        else:
+            sigma_hat_0 = _sigma_raw
 
         # ── Steps 3-5: SURE-Wavelet correction ───────────────────────────────
         _use_jac = (_dyn_jac_interval <= 1) or (i % _dyn_jac_interval == 0)
-        x0_corrected, _ = _sure_correct_x0_wavelet(
+        x0_corrected, _stats = _sure_correct_x0_wavelet(
             model, x0_hat, sigma_hat_0, s_in, extra_args,
             alpha=sure_alpha, n_mc=sure_n_mc, eps_mc=sure_eps,
             use_jac=_use_jac, sigma_t=sigma,
@@ -5705,7 +5800,19 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
             adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
             adam_wd=sure_adam_wd,
             wavelet=sure_wavelet, wavelet_level=sure_wavelet_level,
+            approx_coeff=sure_approx_coeff,
+            warmup_steps=sure_wavelet_warmup_steps,
         )
+
+        if _csv_writer is not None:
+            _csv_writer.writerow([
+                i, f"{sigma_hat_0:.6f}", f"{sigma_val:.6f}",
+                f"{sure_approx_coeff:.4f}",
+                f"{_stats['sure_val']:.6f}",
+                f"{_stats['pixel_delta_rms']:.6f}",
+                f"{sure_alpha:.6f}",
+            ])
+            _csv_fh.flush()
         # jac_ratio adaptation is not applicable here — wavelet correction does
         # not produce a scalar jac_ratio signal; jac_interval is fixed.
 
@@ -5721,6 +5828,9 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
             d = (x - x0_corrected) / sigma
             x = x + d * (sigma_down - sigma)
             x = x + sigma_up * noise_sampler(sigma, sigma_next)
+
+    if _csv_fh is not None:
+        _csv_fh.close()
 
     if x.device.type == "cuda":
         torch.cuda.empty_cache()
