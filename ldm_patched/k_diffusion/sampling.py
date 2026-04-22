@@ -5300,13 +5300,22 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
                               adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
                               adam_wd=0.01,
                               wavelet='db4', wavelet_level=3,
-                              approx_coeff=2.0, warmup_steps=0):
+                              approx_coeff=2.0, warmup_steps=0,
+                              grad_mode='approx'):
     """SURE-Wavelet: per-subband SURE gradient correction.
 
     Decomposes x0_hat into orthogonal 2D wavelet subbands via ptwt.wavedec2,
     computes SURE residual gradient independently for the approximation (R) and
     each detail subband (H/V/D at each level L), applies per-subband Adam
     moment tracking, then reconstructs the corrected x0 via ptwt.waverec2.
+
+    grad_mode controls how the per-subband gradient is computed:
+      'approx' — stop-gradient approximation: grad = approx_coeff · res_c  (fast, no backward).
+      'vjp'    — exact ∇‖x−x̂‖² via one autograd backward; pixel-space gradient
+                 decomposed into subbands via wavedec2 so Adam moments track the
+                 Jacobian-corrected direction per frequency band.
+      'full'   — full ∇SURE: adds 2σ²·∇tr{J_D} term on top of vjp; requires
+                 use_jac=True, falls back to vjp behavior otherwise.
 
     Structure of wavelet coefficients (output of wavedec2 at 'level' L):
       [cA,  (cH_L, cV_L, cD_L),  ...,  (cH_1, cV_1, cD_1)]
@@ -5334,7 +5343,7 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
             alpha=alpha, n_mc=n_mc, eps_mc=eps_mc, use_jac=use_jac,
             sigma_t=sigma_t, adam_state=adam_state, adam_mode=adam_mode,
             adam_beta1=adam_beta1, adam_beta2=adam_beta2, adam_eps=adam_eps,
-            adam_wd=adam_wd,
+            adam_wd=adam_wd, grad_mode=grad_mode,
         )
 
     eps            = max(float(x0_hat.abs().max().item()) / 1000.0, float(eps_mc))
@@ -5345,33 +5354,128 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
 
     _sure_logger.debug(
         "[sure_wavelet] params  sigma_hat_0=%.5f  sigma2=%.6f  eps=%.5f  "
-        "sigma_p=%.5f  use_jac=%s  adam=%s",
-        sigma_hat_0, sigma2, eps, float(sigma_p), use_jac, adam_mode,
+        "sigma_p=%.5f  use_jac=%s  adam=%s  grad_mode=%s",
+        sigma_hat_0, sigma2, eps, float(sigma_p), use_jac, adam_mode, grad_mode,
     )
 
-    # ── Denoiser forward passes ──────────────────────────────────────────────
-    with torch.no_grad():
-        x_hat = model(x0_hat.detach(), sigma_denoiser * s_in, **extra_args).detach()
+    def _release_cache():
+        if x0_hat.device.type == 'cuda':
+            torch.cuda.empty_cache()
+        elif x0_hat.device.type == 'mps':
+            torch.mps.empty_cache()
 
-        # Optional global Jacobian trace (same MC estimator as pixel-space SURE)
-        jac_trace = None
+    # ── Pre-draw probe vectors (vjp/full need them before Pass 1) ────────────
+    need_full_grad = (grad_mode == 'full') and use_jac
+    bs    = [torch.randn_like(x0_hat) for _ in range(n_mc)] if (use_jac and grad_mode in ('vjp', 'full')) else []
+    b_sum = sum(bs) if need_full_grad else None
+
+    # ── Denoiser forward passes ──────────────────────────────────────────────
+    if grad_mode == 'approx':
+        with torch.no_grad():
+            x_hat = model(x0_hat.detach(), sigma_denoiser * s_in, **extra_args).detach()
+
+            # Optional global Jacobian trace (same MC estimator as pixel-space SURE)
+            jac_trace = None
+            if use_jac:
+                b          = torch.randn_like(x0_hat)
+                x_pert_hat = model(
+                    (x0_hat + eps * b).detach(), sigma_p * s_in, **extra_args,
+                ).detach()
+                jac_trace = float((b * (x_pert_hat - x_hat)).sum()) / eps
+                if n_mc > 1:
+                    for _ in range(n_mc - 1):
+                        b2      = torch.randn_like(x0_hat)
+                        x_pert2 = model(
+                            (x0_hat + eps * b2).detach(), sigma_p * s_in, **extra_args,
+                        ).detach()
+                        jac_trace += float((b2 * (x_pert2 - x_hat)).sum()) / eps
+                    jac_trace /= n_mc
+
+        # pixel-space residual: xnoisy − x̂
+        residual    = x0_hat - x_hat
+        grad_coeffs = None   # per-subband gradient computed as approx_coeff·res_c
+
+    else:
+        # 'vjp' / 'full' — compute exact ∇‖r‖² via one backward pass through D,
+        # then decompose the pixel-space gradient into wavelet subbands so Adam
+        # tracks the Jacobian-corrected direction per frequency band.
+        _release_cache()
+        x_in = x0_hat.detach().requires_grad_(True)
+
+        def _model_ckpt(x):
+            return model(x, sigma_denoiser * s_in, **extra_args)
+
+        with torch.enable_grad():
+            x_hat       = torch.utils.checkpoint.checkpoint(
+                              _model_ckpt, x_in, use_reentrant=False)
+            residual    = x_in - x_hat
+            residual_sq = (residual ** 2).sum()
+
+            if need_full_grad:
+                # Two VJPs through the retained Pass-1 graph: one for ∇‖r‖²,
+                # one for J_D(x)^T·b_sum (used to subtract the base Jac term later).
+                jac_scalar_base_sum = (b_sum * x_hat).sum() / eps
+                grad_pixel          = torch.autograd.grad(
+                    residual_sq, x_in, retain_graph=True)[0]
+                grad_jac_base_sum   = torch.autograd.grad(
+                    jac_scalar_base_sum, x_in, retain_graph=False)[0]
+            else:
+                grad_pixel        = torch.autograd.grad(residual_sq, x_in)[0]
+                grad_jac_base_sum = None
+
+        x_hat      = x_hat.detach()
+        residual   = residual.detach()
+        grad_pixel = grad_pixel.detach()
+        _release_cache()
+
+        # Jacobian trace scalar + optional ∇tr{J} for 'full' mode
+        jac_trace = 0.0 if use_jac else None
         if use_jac:
-            b          = torch.randn_like(x0_hat)
-            x_pert_hat = model(
-                (x0_hat + eps * b).detach(), sigma_p * s_in, **extra_args,
-            ).detach()
-            jac_trace = float((b * (x_pert_hat - x_hat)).sum()) / eps
-            if n_mc > 1:
-                for _ in range(n_mc - 1):
-                    b2      = torch.randn_like(x0_hat)
-                    x_pert2 = model(
-                        (x0_hat + eps * b2).detach(), sigma_p * s_in, **extra_args,
-                    ).detach()
-                    jac_trace += float((b2 * (x_pert2 - x_hat)).sum()) / eps
+            if need_full_grad:
+                grad_jac_pert_sum = torch.zeros_like(grad_pixel)
+                for b in bs:
+                    x_in_pert = x0_hat.detach() + eps * b
+                    _release_cache()
+                    x_in_pert = x_in_pert.requires_grad_(True)
+                    def _model_pert_ckpt(x):  # noqa: E306
+                        return model(x, sigma_p * s_in, **extra_args)
+                    with torch.enable_grad():
+                        x_pert_hat   = torch.utils.checkpoint.checkpoint(
+                                           _model_pert_ckpt, x_in_pert, use_reentrant=False)
+                        jac_scalar_p = (b * x_pert_hat).sum() / eps
+                        gj_pert      = torch.autograd.grad(jac_scalar_p, x_in_pert)[0]
+                    jac_trace += float((b * x_pert_hat).sum().detach()) / eps
+                    del x_pert_hat
+                    _release_cache()
+                    grad_jac_pert_sum = grad_jac_pert_sum + gj_pert
+                    del gj_pert
+                jac_trace /= n_mc
+                # Full gradient: pixel-space ∇tr{J} = (1/ε)·[Σ J_D(x+εb)^T·b − J_D(x)^T·Σb] / n_mc
+                grad_pixel = grad_pixel + (2.0 * sigma2 / n_mc) * (grad_jac_pert_sum - grad_jac_base_sum)
+                del grad_jac_pert_sum, grad_jac_base_sum
+            else:
+                # vjp: trace via no-grad MC only (no extra backward needed)
+                for b in bs:
+                    with torch.no_grad():
+                        x_pert_hat = model(
+                            (x0_hat.detach() + eps * b), sigma_p * s_in, **extra_args,
+                        ).detach()
+                    jac_trace += float((b * (x_pert_hat - x_hat)).sum()) / eps
+                    del x_pert_hat
                 jac_trace /= n_mc
 
-    # pixel-space residual: xnoisy − x̂
-    residual = x0_hat - x_hat
+        # Clamp pixel-space gradient before wavelet decomposition — same
+        # outlier-suppression as _sure_correct_x0 to keep Adam v_t stable.
+        _x0_std_g = x0_hat.std().item()
+        _gs       = grad_pixel.std().item()
+        if _gs > _x0_std_g > 0.0:
+            grad_pixel = grad_pixel * (_x0_std_g / _gs)
+        grad_pixel = grad_pixel.clamp(-3.0 * _x0_std_g, 3.0 * _x0_std_g)
+
+        # Decompose pixel-space gradient into wavelet subbands — linear transform
+        # commutes with the subband correction, so this is exact.
+        grad_coeffs = ptwt.wavedec2(grad_pixel.detach(), _wav, level=wavelet_level, mode='reflect')
+        del grad_pixel
     _sure_logger.debug(
         "[sure_wavelet] denoiser  x_hat range=[%.4f, %.4f]  "
         "residual_rms=%.5f  residual_max=%.5f  jac_trace=%s",
@@ -5448,8 +5552,9 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
     # RAdam was also tried as an alternative warmup mechanism: with β₂=0.999 and
     # ~60 diffusion steps, ρ_t never grows large enough — rect factor ≈ 0.021 at
     # step 6, effectively zeroing corrections until step ~100 which never arrives.
-    def _correct_coeff(x0_c, res_c, m_c, v_c):
-        grad = approx_coeff * res_c
+    def _correct_coeff(x0_c, res_c, g_c, m_c, v_c):
+        # g_c: pre-computed subband gradient (vjp/full); None → approx_coeff·res_c
+        grad = g_c if g_c is not None else approx_coeff * res_c
         raw_grad_rms = float((grad ** 2).mean() ** 0.5)
 
         if adam_state is not None and adam_mode in ('adam', 'adamw'):
@@ -5494,7 +5599,8 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
             m0 = adam_state['wavelet_m'][0] if (adam_state and 'wavelet_m' in adam_state) else None
             v0 = adam_state['wavelet_v'][0] if (adam_state and 'wavelet_v' in adam_state) else None
             sb_sure = float(-res_sb.numel() * sigma2 + (res_sb ** 2).sum())
-            c_corr, m0_new, v0_new, rg_rms, eg_rms, ar = _correct_coeff(x0_sb, res_sb, m0, v0)
+            g0      = grad_coeffs[0] if grad_coeffs is not None else None
+            c_corr, m0_new, v0_new, rg_rms, eg_rms, ar = _correct_coeff(x0_sb, res_sb, g0, m0, v0)
             if adam_state is not None and 'wavelet_m' in adam_state:
                 adam_state['wavelet_m'][0] = m0_new
                 adam_state['wavelet_v'][0] = v0_new
@@ -5525,8 +5631,9 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
             _sub_names  = ('H', 'V', 'D')
             for sub_i in range(3):      # H, V, D
                 sb_sure = float(-res_sb[sub_i].numel() * sigma2 + (res_sb[sub_i] ** 2).sum())
+                g_sb    = grad_coeffs[sb_idx][sub_i] if grad_coeffs is not None else None
                 c_corr, m_new, v_new, rg_rms, eg_rms, ar = _correct_coeff(
-                    x0_sb[sub_i], res_sb[sub_i], prev_m[sub_i], prev_v[sub_i],
+                    x0_sb[sub_i], res_sb[sub_i], g_sb, prev_m[sub_i], prev_v[sub_i],
                 )
                 detail_corr.append(c_corr)
                 new_m.append(m_new)
@@ -5713,7 +5820,8 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
                         sure_adam_beta2=0.999, sure_adam_wd=0.01,
                         sure_wavelet='db4', sure_wavelet_level=3,
                         sure_approx_coeff=2.0, sure_csv_path=None,
-                        sure_sigma_ema=0.0, sure_wavelet_warmup_steps=0):
+                        sure_sigma_ema=0.0, sure_wavelet_warmup_steps=0,
+                        sure_grad_mode='vjp'):
     """SURE-Wavelet — Euler Ancestral variant.
 
     Identical control flow to sample_sure, but replaces pixel-space SURE
@@ -5729,6 +5837,10 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
 
     sure_wavelet       : PyWavelets orthogonal wavelet name (default 'db4').
     sure_wavelet_level : number of DWT decomposition levels (default 3).
+    sure_grad_mode     : gradient mode passed to _sure_correct_x0_wavelet —
+                         'approx' (stop-grad, no backward), 'vjp' (exact ∇‖r‖²
+                         via autograd, decomposed into subbands), or 'full'
+                         (vjp + 2σ²·∇tr{J_D} trace term). Default 'vjp'.
     """
     import csv as _csv
     extra_args    = {} if extra_args is None else extra_args
@@ -5756,9 +5868,9 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
     n_steps = len(sigmas) - 1
     _sure_logger.info(
         "SURE-Wavelet sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d  "
-        "wavelet=%s  level=%d  adam=%s  approx_coeff=%.2f  sigma_ema=%.2f  warmup=%d",
+        "wavelet=%s  level=%d  adam=%s  grad_mode=%s  approx_coeff=%.2f  sigma_ema=%.2f  warmup=%d",
         n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval,
-        sure_wavelet, sure_wavelet_level, sure_adam_mode,
+        sure_wavelet, sure_wavelet_level, sure_adam_mode, sure_grad_mode,
         sure_approx_coeff, sure_sigma_ema, sure_wavelet_warmup_steps,
     )
 
@@ -5802,6 +5914,7 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
             wavelet=sure_wavelet, wavelet_level=sure_wavelet_level,
             approx_coeff=sure_approx_coeff,
             warmup_steps=sure_wavelet_warmup_steps,
+            grad_mode=sure_grad_mode,
         )
 
         if _csv_writer is not None:
