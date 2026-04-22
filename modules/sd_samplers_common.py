@@ -374,7 +374,7 @@ class Sampler:
                 p.extra_generation_params['DPM++ 2M solver'] = solver_type
 
         _SURE_SAMPLERS = {
-            'sample_sure', 'sample_sure_adaptive',
+            'sample_sure', 'sample_sure_wavelet', 'sample_sure_adaptive',
             'sample_dpmpp_2m_sure', 'sample_dpmpp_2m_sde_sure',
             'sample_dpmpp_3m_sde_sure', 'sample_dpmpp_2m_sde_sure_adaptive',
             'sample_dpmpp_2s_a_sure', 'sample_dpmpp_2s_a_sure_adaptive',
@@ -404,6 +404,13 @@ class Sampler:
             if 'sure_adam_beta1' in _sure_sig: extra_params_kwargs['sure_adam_beta1'] = sure_adam_beta1
             if 'sure_adam_beta2' in _sure_sig: extra_params_kwargs['sure_adam_beta2'] = sure_adam_beta2
             if 'sure_adam_wd'    in _sure_sig: extra_params_kwargs['sure_adam_wd']    = sure_adam_wd
+            # SURE-Wavelet specific params — only forwarded when the sampler accepts them
+            if 'sure_wavelet'       in _sure_sig:
+                sure_wavelet       = getattr(shared.opts, 'sure_wavelet',       'db4')
+                extra_params_kwargs['sure_wavelet'] = sure_wavelet
+            if 'sure_wavelet_level' in _sure_sig:
+                sure_wavelet_level = getattr(shared.opts, 'sure_wavelet_level', 3)
+                extra_params_kwargs['sure_wavelet_level'] = sure_wavelet_level
             p.extra_generation_params['SURE alpha']         = sure_alpha
             p.extra_generation_params['SURE n_mc']          = sure_n_mc
             p.extra_generation_params['SURE eps']           = sure_eps
