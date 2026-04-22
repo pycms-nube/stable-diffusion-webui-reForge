@@ -406,6 +406,12 @@ class Sampler:
             if 'sure_adam_beta1' in _sure_sig: extra_params_kwargs['sure_adam_beta1'] = sure_adam_beta1
             if 'sure_adam_beta2' in _sure_sig: extra_params_kwargs['sure_adam_beta2'] = sure_adam_beta2
             if 'sure_adam_wd'    in _sure_sig: extra_params_kwargs['sure_adam_wd']    = sure_adam_wd
+            sure_approx_coeff = getattr(shared.opts, 'sure_approx_coeff', 2.0)
+            sure_csv_path     = getattr(shared.opts, 'sure_csv_path', '').strip() or None
+            sure_sigma_ema    = getattr(shared.opts, 'sure_sigma_ema', 0.0)
+            if 'sure_approx_coeff' in _sure_sig: extra_params_kwargs['sure_approx_coeff'] = sure_approx_coeff
+            if 'sure_csv_path'     in _sure_sig: extra_params_kwargs['sure_csv_path']     = sure_csv_path
+            if 'sure_sigma_ema'    in _sure_sig: extra_params_kwargs['sure_sigma_ema']    = sure_sigma_ema
             # SURE-Wavelet specific params — only forwarded when the sampler accepts them
             if 'sure_wavelet'       in _sure_sig:
                 sure_wavelet       = getattr(shared.opts, 'sure_wavelet',       'db4')
@@ -413,6 +419,9 @@ class Sampler:
             if 'sure_wavelet_level' in _sure_sig:
                 sure_wavelet_level = getattr(shared.opts, 'sure_wavelet_level', 3)
                 extra_params_kwargs['sure_wavelet_level'] = sure_wavelet_level
+            if 'sure_wavelet_warmup_steps' in _sure_sig:
+                sure_wavelet_warmup_steps = getattr(shared.opts, 'sure_wavelet_warmup_steps', 0)
+                extra_params_kwargs['sure_wavelet_warmup_steps'] = sure_wavelet_warmup_steps
             p.extra_generation_params['SURE alpha']         = sure_alpha
             p.extra_generation_params['SURE n_mc']          = sure_n_mc
             p.extra_generation_params['SURE eps']           = sure_eps
