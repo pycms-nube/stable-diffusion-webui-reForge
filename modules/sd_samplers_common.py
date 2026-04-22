@@ -387,6 +387,7 @@ class Sampler:
             sure_eps   = getattr(shared.opts, 'sure_eps', 1e-3)
             sure_jac_interval   = getattr(shared.opts, 'sure_jac_interval', 2)
             sure_preheat_steps  = getattr(shared.opts, 'sure_preheat_steps', -1)
+            sure_grad_mode  = getattr(shared.opts, 'sure_grad_mode', 'vjp')
             sure_adam_mode  = getattr(shared.opts, 'sure_adam_mode', 'none')
             sure_adam_beta1 = getattr(shared.opts, 'sure_adam_beta1', 0.9)
             sure_adam_beta2 = getattr(shared.opts, 'sure_adam_beta2', 0.999)
@@ -400,6 +401,7 @@ class Sampler:
                 # adaptive variants use a fraction instead of a fixed count
                 frac = max(0.0, min(1.0, sure_preheat_steps / 20.0)) if sure_preheat_steps >= 0 else 0.3
                 extra_params_kwargs['sure_preheat_frac'] = frac
+            if 'sure_grad_mode'  in _sure_sig: extra_params_kwargs['sure_grad_mode']  = sure_grad_mode
             if 'sure_adam_mode'  in _sure_sig: extra_params_kwargs['sure_adam_mode']  = sure_adam_mode
             if 'sure_adam_beta1' in _sure_sig: extra_params_kwargs['sure_adam_beta1'] = sure_adam_beta1
             if 'sure_adam_beta2' in _sure_sig: extra_params_kwargs['sure_adam_beta2'] = sure_adam_beta2
@@ -409,6 +411,8 @@ class Sampler:
             p.extra_generation_params['SURE eps']           = sure_eps
             p.extra_generation_params['SURE jac_interval']  = sure_jac_interval
             p.extra_generation_params['SURE preheat_steps'] = sure_preheat_steps
+            if sure_grad_mode != 'vjp':
+                p.extra_generation_params['SURE grad_mode'] = sure_grad_mode
             if sure_adam_mode != 'none':
                 p.extra_generation_params['SURE adam_mode']  = sure_adam_mode
                 p.extra_generation_params['SURE adam_beta1'] = sure_adam_beta1

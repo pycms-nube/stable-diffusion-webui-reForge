@@ -1121,7 +1121,8 @@ def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, dis
                              sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                              sure_preheat_steps=-1, sure_jac_interval=-1,
                              sure_adam_mode='none', sure_adam_beta1=0.9,
-                             sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                             sure_adam_beta2=0.999, sure_adam_wd=0.01,
+                             sure_grad_mode='vjp'):
     """DPM-Solver++(2S) Ancestral with SURE trajectory correction.
 
     SURE corrects x̂₀ on the first (main) model call at each step.
@@ -1179,7 +1180,7 @@ def sample_dpmpp_2s_a_sure(model, x, sigmas, extra_args=None, callback=None, dis
                 use_jac=_use_jac, sigma_t=sigma,
                 adam_state=_adam_state, adam_mode=sure_adam_mode,
                 adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-                adam_wd=sure_adam_wd,
+                adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
             )
             _corr_count += 1
             _jac_ratio_new = _stats.get('jac_ratio')
@@ -1239,7 +1240,7 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
                                      sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                                      sure_preheat_frac=0.3, sure_jac_interval=2,
                                      sure_adam_mode='none', sure_adam_beta1=0.9,
-                                     sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                                     sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
     """DPM-Solver++(2S) Ancestral + SURE with adaptive step size (PID).
 
     Error estimate: compare 1st-order Euler (x_low) vs 2S midpoint (x_high),
@@ -1311,7 +1312,7 @@ def sample_dpmpp_2s_a_sure_adaptive(model, x, sigma_min, sigma_max,
                     use_jac=_use_jac, sigma_t=sigma_s,
                     adam_state=_adam_state, adam_mode=sure_adam_mode,
                     adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-                    adam_wd=sure_adam_wd,
+                    adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
                 )
                 _corr_count += 1
 
@@ -1555,7 +1556,7 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
                           sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                           sure_preheat_steps=-1, sure_jac_interval=-1,
                           sure_adam_mode='none', sure_adam_beta1=0.9,
-                          sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                          sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
     """DPM-Solver++(2M) with SURE trajectory correction.
 
     Fully deterministic ODE — zero noise injection at any step. SURE correction
@@ -1617,7 +1618,7 @@ def sample_dpmpp_2m_sure(model, x, sigmas, extra_args=None, callback=None, disab
                 use_jac=_use_jac, sigma_t=sigma,
                 adam_state=_adam_state, adam_mode=sure_adam_mode,
                 adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-                adam_wd=sure_adam_wd,
+                adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
             )
             _corr_count += 1
 
@@ -1669,7 +1670,7 @@ def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
                                sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                                sure_preheat_steps=-1, sure_jac_interval=-1,
                                sure_adam_mode='none', sure_adam_beta1=0.9,
-                               sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                               sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
     """DPM-Solver++(2M) SDE with SURE trajectory correction.
 
     Matches the SURE paper (arxiv 2512.23232) Algorithm 1 which uses a stochastic
@@ -1744,7 +1745,7 @@ def sample_dpmpp_2m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
                 use_jac=_use_jac, sigma_t=sigma,
                 adam_state=_adam_state, adam_mode=sure_adam_mode,
                 adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-                adam_wd=sure_adam_wd,
+                adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
             )
             _corr_count += 1
 
@@ -1931,7 +1932,7 @@ def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
                                sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                                sure_preheat_steps=-1, sure_jac_interval=-1,
                                sure_adam_mode='none', sure_adam_beta1=0.9,
-                               sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                               sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
     """DPM-Solver++(3M) SDE with SURE trajectory correction.
 
     Implements Algorithm 1 from arXiv:2512.23232 on top of the 3rd-order multistep
@@ -2010,7 +2011,7 @@ def sample_dpmpp_3m_sde_sure(model, x, sigmas, extra_args=None, callback=None, d
                 use_jac=_use_jac, sigma_t=sigma,
                 adam_state=_adam_state, adam_mode=sure_adam_mode,
                 adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-                adam_wd=sure_adam_wd,
+                adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
             )
             _corr_count += 1
 
@@ -2089,7 +2090,7 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
                                        sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                                        sure_preheat_frac=0.3, sure_jac_interval=2,
                                        sure_adam_mode='none', sure_adam_beta1=0.9,
-                                       sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                                       sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
     """DPM-Solver++(2M) SDE with SURE correction and adaptive step size (PID).
 
     Combines three ideas from the literature:
@@ -2176,7 +2177,7 @@ def sample_dpmpp_2m_sde_sure_adaptive(model, x, sigma_min, sigma_max,
                     use_jac=_use_jac, sigma_t=sigma_s,
                     adam_state=_adam_state, adam_mode=sure_adam_mode,
                     adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-                    adam_wd=sure_adam_wd,
+                    adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
                 )
                 _corr_count += 1
 
@@ -4996,24 +4997,29 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
                      sigma_t=None,
                      adam_state=None, adam_mode='none',
                      adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8,
-                     adam_wd=0.01):
+                     adam_wd=0.01, grad_mode='vjp'):
     """SURE gradient correction per Algorithm 1 of arXiv:2512.23232.
 
-    Two no-grad forward passes implement the MC-SURE step without backward:
+    grad_mode controls how ∇SURE is computed:
+
+      'approx'  — stop-gradient approximation: grad = 2·(xnoisy − x̂)
+                  No backward pass; fast but ignores J_D entirely.
+
+      'vjp'     — exact gradient of ‖xnoisy − x̂‖² via one backward pass:
+                  grad = 2·(I − J_D)^T·(xnoisy − x̂)
+                  Includes the Jacobian correction from the chain rule.
+                  The 2σ²·∇tr{J} term is still omitted (O(σ²) small).
+
+      'full'    — full ∇SURE via two backward passes (through both Dθ(x) and
+                  Dθ(x+εb)). Adds the MC-estimated Jacobian-trace gradient:
+                  grad = 2·(I − J_D)^T·r  +  2σ²·(1/ε)·[J_D(x+εb)^T·b − J_D(x)^T·b]
+                  Requires use_jac=True; falls back to 'vjp' otherwise.
+                  Most expensive (three UNet passes with grad, two backward passes).
 
       ε       = max(|xnoisy|) / 1000   (paper §2.4 recommended choice)
       x̂      = Dθ(xnoisy, σ̂₀)
-      tr{J}  ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) · ε^{-1}   [scalar, n_mc averaged]
+      tr{J}  ≈ b^T (Dθ(xnoisy + ε·b, max(ε, σ̂₀)) − x̂) · ε^{-1}   [scalar, MC averaged]
       SURE   = −n·σ̂₀² + ‖xnoisy − x̂‖² + 2·σ̂₀²·tr{J}             [logged only]
-
-    Gradient (stop-gradient on x̂):
-      ∇SURE ≈ 2·(xnoisy − x̂)
-
-    The full ∇SURE also has a 2σ̂₀²·J_D^T b/ε Jacobian term, but computing
-    it requires backward through the UNet — far too much VRAM for large models.
-    Per §5 of the paper, a "Monte Carlo trace estimator that avoids explicit
-    Jacobians" is the intended deployment strategy.  The Jacobian gradient
-    contribution is O(σ̂₀²) and small when σ̂₀ is the small residual noise.
 
     adam_state: dict with keys 'optimizer' (torch.optim.Adam/AdamW) and 'param'
                 (leaf tensor) — mutated in-place across steps via optimizer.step().
@@ -5028,39 +5034,119 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
     # ε: paper says max_pixel / 1000; clamp to eps_mc for numerical safety
     eps = max(float(x0_hat.abs().max().item()) / 1000.0, float(eps_mc))
 
-    sigma_denoiser = torch.tensor(sigma_hat_0, device=x0_hat.device, dtype=x0_hat.dtype)
+    device = x0_hat.device
+    sigma_denoiser = torch.tensor(sigma_hat_0, device=device, dtype=x0_hat.dtype)
     # max(ε, σ̂₀) — Algorithm 1 floors the perturbed denoiser sigma here
-    sigma_p = torch.tensor(max(eps, sigma_hat_0), device=x0_hat.device, dtype=x0_hat.dtype)
+    sigma_p = torch.tensor(max(eps, sigma_hat_0), device=device, dtype=x0_hat.dtype)
     sigma2  = float(sigma_denoiser ** 2)
     n       = x0_hat.numel()
 
-    with torch.no_grad():
-        # Pass 1: x̂ = Dθ(xnoisy, σ̂₀)
-        x_hat    = model(x0_hat.detach(), sigma_denoiser * s_in, **extra_args).detach()
-        residual = x0_hat - x_hat   # xnoisy − x̂
+    def _release_cache():
+        # Return freed activation buffers to the OS/driver so other allocations can use them.
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        elif device.type == 'mps':
+            torch.mps.empty_cache()
 
-        # Pass 2 (optional): Dθ(xnoisy + ε·b, max(ε, σ̂₀)) for tr{J} scalar
-        jac_trace = None
-        sure_val  = float(-n * sigma2 + (residual ** 2).sum())
-        if use_jac:
-            b         = torch.randn_like(x0_hat)
-            x_pert_hat = model(
-                (x0_hat + eps * b).detach(), sigma_p * s_in, **extra_args,
-            ).detach()
-            # Average over n_mc by repeating b draws (batched into one call if n_mc > 1)
-            jac_trace = float((b * (x_pert_hat - x_hat)).sum()) / eps
-            if n_mc > 1:
-                for _ in range(n_mc - 1):
-                    b2         = torch.randn_like(x0_hat)
-                    x_pert2    = model(
-                        (x0_hat + eps * b2).detach(), sigma_p * s_in, **extra_args,
-                    ).detach()
-                    jac_trace += float((b2 * (x_pert2 - x_hat)).sum()) / eps
-                jac_trace /= n_mc
-            sure_val += 2.0 * sigma2 * jac_trace
+    # ── Pre-draw probe vectors ────────────────────────────────────────────────
+    # For 'full' mode draw all n_mc probes BEFORE Pass 1 so their sum can be
+    # used in a single backward through the retained Pass 1 graph, avoiding
+    # n_mc redundant base-model forward passes.
+    need_full_grad = (grad_mode == 'full') and use_jac
+    bs = [torch.randn_like(x0_hat) for _ in range(n_mc)] if use_jac else []
+    b_sum = sum(bs) if need_full_grad else None  # J_D(x)^T·b_sum / ε in one VJP
 
-    # ∇SURE ≈ 2·(xnoisy − x̂)  [residual gradient; stop-grad on x̂]
-    grad   = 2.0 * residual
+    # ── Pass 1: x̂ = Dθ(xnoisy, σ̂₀) ─────────────────────────────────────────
+    # 'approx' needs no grad graph; 'vjp'/'full' require enable_grad to override
+    # any outer no_grad context (e.g. CFG wrapper).
+    #
+    # Flush the allocator pool before any grad-enabled forward.  The outer
+    # sampling step ran a no_grad forward whose activations are freed but may
+    # still sit in the MPS private pool / CUDA caching allocator.  Releasing
+    # them here gives back headroom before we store activation graphs.
+    if grad_mode != 'approx':
+        _release_cache()
+
+    x_in = x0_hat.detach().requires_grad_(grad_mode != 'approx')
+    if grad_mode == 'approx':
+        with torch.no_grad():
+            x_hat = model(x_in, sigma_denoiser * s_in, **extra_args).detach()
+        residual = x_in - x_hat
+        grad = 2.0 * residual           # stop-gradient approximation
+        grad_jac_base_sum = None
+    else:
+        # Gradient checkpointing: recompute activations during backward instead
+        # of storing them, trading one extra forward pass for ~halved peak VRAM.
+        def _model_ckpt(x):
+            return model(x, sigma_denoiser * s_in, **extra_args)
+
+        with torch.enable_grad():
+            x_hat    = torch.utils.checkpoint.checkpoint(
+                           _model_ckpt, x_in, use_reentrant=False)
+            residual = x_in - x_hat
+            residual_sq = (residual ** 2).sum()
+
+            if need_full_grad:
+                # Compute residual VJP and base Jac VJP in two successive passes
+                # through the same retained graph — avoids a 3rd UNet forward.
+                # J_D(x)^T·b_sum / ε is linear in b_sum, so summing b first is exact.
+                jac_scalar_base_sum = (b_sum * x_hat).sum() / eps
+                grad = torch.autograd.grad(residual_sq, x_in, retain_graph=True)[0]
+                grad_jac_base_sum = torch.autograd.grad(
+                    jac_scalar_base_sum, x_in, retain_graph=False,
+                )[0]
+                # Graph freed here; activation buffers can be reclaimed.
+            else:
+                # 'vjp': single backward, graph freed immediately.
+                grad = torch.autograd.grad(residual_sq, x_in)[0]
+                grad_jac_base_sum = None
+            del residual_sq
+
+        x_hat    = x_hat.detach()
+        residual = residual.detach()
+        _release_cache()   # free activation pool after Pass 1 backward(s)
+
+    # ── Pass 2 (optional): tr{J} scalar + optional ∇tr{J} for 'full' mode ────
+    jac_trace = 0.0 if use_jac else None
+    sure_val  = float(-n * sigma2 + (residual ** 2).sum())
+
+    if use_jac:
+        grad_jac_pert_sum = torch.zeros_like(grad) if need_full_grad else None
+
+        for b in bs:
+            x_in_pert = x_in.detach() + eps * b
+
+            if need_full_grad:
+                # Forward through Dθ(x+εb) with grad for VJP.
+                # Flush pool before each grad-enabled perturbed forward.
+                _release_cache()
+                x_in_pert = x_in_pert.requires_grad_(True)
+                def _model_pert_ckpt(x):
+                    return model(x, sigma_p * s_in, **extra_args)
+                with torch.enable_grad():
+                    x_pert_hat   = torch.utils.checkpoint.checkpoint(
+                                       _model_pert_ckpt, x_in_pert, use_reentrant=False)
+                    jac_scalar_p = (b * x_pert_hat).sum() / eps
+                    gj_pert      = torch.autograd.grad(jac_scalar_p, x_in_pert)[0]
+                # Extract scalar before releasing tensor.
+                jac_trace += float((b * x_pert_hat).sum().detach()) / eps
+                del x_pert_hat
+                _release_cache()
+                grad_jac_pert_sum = grad_jac_pert_sum + gj_pert
+                del gj_pert
+            else:
+                with torch.no_grad():
+                    x_pert_hat = model(x_in_pert, sigma_p * s_in, **extra_args).detach()
+                jac_trace += float((b * (x_pert_hat - x_hat)).sum()) / eps
+                del x_pert_hat
+
+        jac_trace /= n_mc
+        sure_val  += 2.0 * sigma2 * jac_trace
+
+        if need_full_grad:
+            # ∇tr{J} ≈ (1/ε)·[Σ J_D(x+εb_i)^T·b_i  −  J_D(x)^T·Σb_i] / n_mc
+            grad = grad + (2.0 * sigma2 / n_mc) * (grad_jac_pert_sum - grad_jac_base_sum)
+            del grad_jac_pert_sum, grad_jac_base_sum
     x0_std = x0_hat.std().item()
     gs     = grad.std().item()
     if gs > x0_std > 0.0:
@@ -5149,7 +5235,7 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
                 sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                 sure_jac_interval=2,
                 sure_adam_mode='none', sure_adam_beta1=0.9,
-                sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
     """SURE Guided Posterior Sampling (SGPS) — Euler Ancestral variant.
 
     Implements Algorithm 1 from arXiv:2512.23232 directly.  Every step:
@@ -5207,7 +5293,7 @@ def sample_sure(model, x, sigmas, extra_args=None, callback=None, disable=None,
             use_jac=_use_jac, sigma_t=sigma,
             adam_state=_adam_state, adam_mode=sure_adam_mode,
             adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-            adam_wd=sure_adam_wd,
+            adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
         )
 
         # Adapt jac_interval from jac_ratio EMA
@@ -5261,7 +5347,7 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
                           sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
                           sure_preheat_frac=0.3, sure_jac_interval=2,
                           sure_adam_mode='none', sure_adam_beta1=0.9,
-                          sure_adam_beta2=0.999, sure_adam_wd=0.01):
+                          sure_adam_beta2=0.999, sure_adam_wd=0.01, sure_grad_mode='vjp'):
     """SURE sampler with adaptive step size (PID controller on DPM-Solver-2 error).
 
     Combines:
@@ -5348,7 +5434,7 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
                     use_jac=_use_jac, sigma_t=sigma_s,
                     adam_state=_adam_state, adam_mode=sure_adam_mode,
                     adam_beta1=sure_adam_beta1, adam_beta2=sure_adam_beta2,
-                    adam_wd=sure_adam_wd,
+                    adam_wd=sure_adam_wd, grad_mode=sure_grad_mode,
                 )
                 _corr_count += 1
 
