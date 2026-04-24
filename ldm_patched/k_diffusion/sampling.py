@@ -5199,9 +5199,9 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
     # (e.g. huge SURE residual at step 0) inflates v_t and suppresses all future
     # updates for the rest of the run.  Normalising to x0_std then hard-clamping
     # to ±3σ keeps v_t in a reliable range without discarding gradient direction.
-    if gs > x0_std > 0.0:
-        grad = grad * (x0_std / gs)
-    grad = grad.clamp(-3.0 * x0_std, 3.0 * x0_std)
+    #if gs > x0_std > 0.0:
+        #grad = grad * (x0_std / gs)
+    #grad = grad.clamp(-3.0 * x0_std, 3.0 * x0_std)
 
     # Compute effective_alpha first — needed as lr for the optimizer.
     # Adam normalises gradients internally so sigma scaling would double-suppress
@@ -5227,13 +5227,13 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
                 opt = torch.optim.AdamW(
                     [param], lr=effective_alpha,
                     betas=(adam_beta1, adam_beta2),
-                    eps=adam_eps, weight_decay=adam_wd,
+                    eps=adam_eps, weight_decay=adam_wd
                 )
             else:
                 opt = torch.optim.Adam(
                     [param], lr=effective_alpha,
                     betas=(adam_beta1, adam_beta2),
-                    eps=adam_eps, weight_decay=0.0,
+                    eps=adam_eps, weight_decay=0.0, amsgrad=True
                 )
             adam_state['optimizer'] = opt
             adam_state['param'] = param
@@ -5315,12 +5315,16 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
     moment tracking, then reconstructs the corrected x0 via ptwt.waverec2.
 
     grad_mode controls how the per-subband gradient is computed:
-      'approx' — stop-gradient approximation: grad = approx_coeff · res_c  (fast, no backward).
-      'vjp'    — exact ∇‖x−x̂‖² via one autograd backward; pixel-space gradient
-                 decomposed into subbands via wavedec2 so Adam moments track the
-                 Jacobian-corrected direction per frequency band.
-      'full'   — full ∇SURE: adds 2σ²·∇tr{J_D} term on top of vjp; requires
-                 use_jac=True, falls back to vjp behavior otherwise.
+      'approx'  — stop-gradient approximation: grad = approx_coeff · r_k  (fast, no backward).
+      'vjp'     — one autograd backward on ‖r‖²; pixel-space gradient decomposed into
+                  subbands.  Each subband k receives W_k·2(I−J_D)^T r — this mixes all
+                  subbands' residuals through J_D^T.
+      'vjp_sb'  — per-subband Hutchinson VJP; two no-grad forwards, no backward.
+                  For each subband k: g_k = 2r_k − (2/n_mc)Σ_b(b_k^T r_k)(D_k(x+εb)−D_k(x))/ε
+                  where b_k = W_k b.  Unbiased estimator of 2(I−W_k J_D W_k^T)^T r_k —
+                  truly independent per-subband guidance with no cross-subband Jacobian leakage.
+      'full'    — full ∇SURE: adds 2σ²·∇tr{J_D} term on top of vjp; requires
+                  use_jac=True, falls back to vjp behavior otherwise.
 
     Structure of wavelet coefficients (output of wavedec2 at 'level' L):
       [cA,  (cH_L, cV_L, cD_L),  ...,  (cH_1, cV_1, cD_1)]
@@ -5371,9 +5375,9 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
         elif x0_hat.device.type == 'mps':
             torch.mps.empty_cache()
 
-    # ── Pre-draw probe vectors (vjp/full need them before Pass 1) ────────────
+    # ── Pre-draw probe vectors (vjp/full/vjp_sb need them before Pass 1) ────
     need_full_grad = (grad_mode == 'full') and use_jac
-    bs    = [torch.randn_like(x0_hat) for _ in range(n_mc)] if (use_jac and grad_mode in ('vjp', 'full')) else []
+    bs    = [torch.randn_like(x0_hat) for _ in range(n_mc)] if (use_jac and grad_mode in ('vjp', 'full', 'vjp_sb')) else []
     b_sum = torch.stack(bs).sum(0) if need_full_grad else None
 
     # ── Denoiser forward passes ──────────────────────────────────────────────
@@ -5383,7 +5387,7 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
 
             # Opt-3: approx grad ignores tr{J} entirely; only compute for debug logging.
             jac_trace = None
-            if use_jac and _sure_logger.isEnabledFor(logging.DEBUG):
+            if use_jac and _sure_logger.isEnabledFor(_logging.DEBUG):
                 b          = torch.randn_like(x0_hat)
                 x_pert_hat = model(
                     (x0_hat + eps * b).detach(), sigma_p * s_in, **extra_args,
@@ -5401,6 +5405,92 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
         # pixel-space residual: xnoisy − x̂
         residual    = x0_hat - x_hat
         grad_coeffs = None   # per-subband gradient computed as approx_coeff·res_c
+
+    elif grad_mode == 'vjp_sb':
+        # Per-subband Hutchinson VJP — two no-grad forwards, no autograd backward.
+        #
+        # For each subband k the per-subband SURE gradient is:
+        #   ∇_{c_k} ‖r_k‖² = 2r_k − 2 W_k J_D W_k^T r_k
+        #
+        # The cross-subband term W_k J_D W_k^T r_k is estimated via a rank-1
+        # Hutchinson stochastic approximation with global probe b ~ N(0,I):
+        #   E_b[(b_k^T r_k) · W_k J_D b] = W_k J_D W_k^T r_k
+        # where b_k = W_k b (subband k projection of the global probe).
+        #
+        # So:  g_k = 2r_k − (2/n_mc) Σ_b (b_k^T r_k) · (D_k(x+εb)−D_k(x))/ε
+        #
+        # Cost: one base forward + n_mc perturbed forwards — no backward pass.
+        # The scalar jac_trace is recovered for free: Σ_k b_k^T D_diff_k = b^T d_diff.
+        with torch.no_grad():
+            x_hat = model(x0_hat.detach(), sigma_denoiser * s_in, **extra_args).detach()
+        residual = (x0_hat - x_hat).detach()
+
+        # Decompose residual once; reuse across probes
+        _res_coeffs_sb = ptwt.wavedec2(residual, _wav, level=wavelet_level, mode='reflect')
+        _n_levels_sb   = len(_res_coeffs_sb)
+
+        # Initialise per-subband accumulator for Jacobian correction
+        _jac_corr: list | None = None
+        jac_trace = 0.0 if use_jac else None
+
+        for b in bs:
+            with torch.no_grad():
+                _x_pert_hat = model(
+                    (x0_hat.detach() + eps * b), sigma_p * s_in, **extra_args,
+                ).detach()
+            _d_diff = (_x_pert_hat - x_hat) / eps  # ≈ J_D b (pixel space)
+
+            if jac_trace is not None:
+                # Global Hutchinson scalar: b^T (J_D b) = Σ_k b_k^T D_diff_k
+                jac_trace += float((b * _d_diff).sum())
+
+            # Decompose probe and Jacobian-vector product into subbands
+            _b_coeffs  = ptwt.wavedec2(b.detach(), _wav, level=wavelet_level, mode='reflect')
+            _dd_coeffs = ptwt.wavedec2(_d_diff,    _wav, level=wavelet_level, mode='reflect')
+
+            if _jac_corr is None:
+                _jac_corr = [torch.zeros_like(_res_coeffs_sb[0])]
+                for _l in range(1, _n_levels_sb):
+                    _jac_corr.append(tuple(
+                        torch.zeros_like(_res_coeffs_sb[_l][_s]) for _s in range(3)
+                    ))
+
+            # Approximation subband: scale = b_0^T r_0  (scalar dot product)
+            _sc0 = float((_b_coeffs[0] * _res_coeffs_sb[0]).sum())
+            _jac_corr[0] = _jac_corr[0] + _sc0 * _dd_coeffs[0]
+
+            # Detail subbands L1..L
+            for _l in range(1, _n_levels_sb):
+                _updated = []
+                for _s in range(3):
+                    _sc = float((_b_coeffs[_l][_s] * _res_coeffs_sb[_l][_s]).sum())
+                    _updated.append(_jac_corr[_l][_s] + _sc * _dd_coeffs[_l][_s])
+                _jac_corr[_l] = tuple(_updated)
+
+            del _x_pert_hat, _d_diff, _b_coeffs, _dd_coeffs
+
+        if jac_trace is not None and n_mc > 0:
+            jac_trace /= n_mc
+
+        # Build per-subband gradient: g_k = 2r_k − (2/n_mc)·jac_corr_k
+        _inv = 2.0 / n_mc if (_jac_corr is not None and n_mc > 0) else 0.0
+        _gc_list = []
+        if _jac_corr is not None:
+            _gc_list.append(2.0 * _res_coeffs_sb[0] - _inv * _jac_corr[0])
+            for _l in range(1, _n_levels_sb):
+                _gc_list.append(tuple(
+                    2.0 * _res_coeffs_sb[_l][_s] - _inv * _jac_corr[_l][_s]
+                    for _s in range(3)
+                ))
+        else:
+            # use_jac=False: pure residual gradient (same as approx with coeff=2)
+            _gc_list.append(2.0 * _res_coeffs_sb[0])
+            for _l in range(1, _n_levels_sb):
+                _gc_list.append(tuple(
+                    2.0 * _res_coeffs_sb[_l][_s] for _s in range(3)
+                ))
+        grad_coeffs = _gc_list
+        del _res_coeffs_sb, _jac_corr
 
     else:
         # 'vjp' / 'full' — compute exact ∇‖r‖² via one backward pass through D,
@@ -5474,9 +5564,9 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
         # outlier-suppression as _sure_correct_x0 to keep Adam v_t stable.
         _x0_std_g = x0_hat.std().item()
         _gs       = grad_pixel.std().item()
-        if _gs > _x0_std_g > 0.0:
-            grad_pixel = grad_pixel * (_x0_std_g / _gs)
-        grad_pixel = grad_pixel.clamp(-3.0 * _x0_std_g, 3.0 * _x0_std_g)
+        #if _gs > _x0_std_g > 0.0:
+            #grad_pixel = grad_pixel * (_x0_std_g / _gs)
+        #grad_pixel = grad_pixel.clamp(-3.0 * _x0_std_g, 3.0 * _x0_std_g)
 
         # Decompose pixel-space gradient into wavelet subbands — linear transform
         # commutes with the subband correction, so this is exact.
@@ -5843,10 +5933,15 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
 
     sure_wavelet       : PyWavelets orthogonal wavelet name (default 'db4').
     sure_wavelet_level : number of DWT decomposition levels (default 3).
-    sure_grad_mode     : gradient mode passed to _sure_correct_x0_wavelet —
-                         'approx' (stop-grad, no backward), 'vjp' (exact ∇‖r‖²
-                         via autograd, decomposed into subbands), or 'full'
-                         (vjp + 2σ²·∇tr{J_D} trace term). Default 'vjp'.
+    sure_grad_mode     : gradient mode passed to _sure_correct_x0_wavelet.
+                         'approx'  — stop-grad, no backward; grad = approx_coeff·r_k.
+                         'vjp'     — one autograd backward on ‖r‖²; pixel gradient
+                                     decomposed to subbands (cross-subband J_D mixing).
+                         'vjp_sb'  — per-subband Hutchinson VJP; two no-grad forwards,
+                                     no backward.  g_k = 2r_k − (2/n_mc)Σ(b_k^T r_k)·D_diff_k/ε.
+                                     Unbiased estimator of 2(I−W_k J_D W_k^T)^T r_k —
+                                     true per-subband independence. Default 'vjp_sb'.
+                         'full'    — vjp + 2σ²·∇tr{J_D} trace term.
     """
     import csv as _csv
     extra_args    = {} if extra_args is None else extra_args
