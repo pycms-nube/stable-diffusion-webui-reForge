@@ -555,6 +555,8 @@ class DiffPipeline():
         instance._auto_offload_ready = False
         instance._b_hooks = []
         instance._b_block_paths = []
+        instance._vram_at_partition = 0
+        instance._regions_installed = False
         instance._tc_ready = False
         instance._autocast_dtype = None
 
@@ -626,6 +628,8 @@ class DiffPipeline():
         self._auto_offload_ready: bool = False
         self._b_hooks: list = []        # registered hook handles (removed on LoRA change)
         self._b_block_paths: list = []  # Group B block paths (for logging)
+        self._vram_at_partition: int = 0  # free bytes (reForge formula) at last partition
+        self._regions_installed: bool = False  # True once nested_compile_region / per-block compile has run
 
         # Tensor Core optimisation state — populated lazily on first apply_model() call.
         self._tc_ready: bool = False
@@ -949,6 +953,13 @@ class DiffPipeline():
         ``setter(m)`` replaces the entry in the UNet in-place (used when
         swapping a block for its torch.compile'd wrapper).
         """
+        # Only yield block-level submodules suitable for per-block torch.compile.
+        # ModuleList children (down_blocks, up_blocks) → yield each item.
+        # Singleton children → only mid_block qualifies; conv_in, conv_out,
+        # conv_norm_out, time_embedding etc. must NOT be compiled individually
+        # because diffusers uses them in boolean context (``if self.conv_norm_out:``)
+        # and OptimizedModule's __len__ raises TypeError in that case.
+        _SINGLETON_BLOCK_NAMES = {"mid_block"}
         for name, child in self._hf_unet.named_children():
             if isinstance(child, torch.nn.ModuleList):
                 for idx in range(len(child)):
@@ -958,7 +969,7 @@ class DiffPipeline():
                         def setter(m): lst[i] = m
                         return setter
                     yield path, make_list_setter(child, idx), child[idx]
-            else:
+            elif name in _SINGLETON_BLOCK_NAMES:
                 def make_attr_setter(attr):
                     def setter(m): setattr(self._hf_unet, attr, m)
                     return setter
@@ -972,23 +983,58 @@ class DiffPipeline():
         device is known.  Must be re-called (via ``_reset_auto_offload``) after
         any structural change to the UNet (e.g. LoRA adapter swap).
         """
-        print(f"[_setup_auto_offload] ENTERED — device={device}")
+        _is_repartition = self._regions_installed  # True on 2nd+ call
+        log.info(
+            "DiffPipeline auto-offload: %s (device=%s)",
+            "re-partitioning" if _is_repartition else "initial partition",
+            device,
+        )
         from accelerate import infer_auto_device_map
 
         # --- 1. Determine max_memory budget ---
         # infer_auto_device_map expects Dict[int | str, int | str] keys.
         # Use str(device) (e.g. "cuda:0") rather than a torch.device object.
+        #
+        # We use model_management.get_free_memory() rather than
+        # torch.cuda.mem_get_info() because the latter reports PyTorch's
+        # allocator cache as consumed.  get_free_memory adds back
+        # (mem_reserved − mem_active) — the portion of that cache PyTorch can
+        # reuse immediately — giving a more accurate picture of what
+        # infer_auto_device_map can actually place on device.  We store the
+        # measurement so _reset_auto_offload can detect significant pressure
+        # changes and trigger a re-partition.
         device_key = str(device)
         if device.type == "cuda":
-            free_bytes, _ = torch.cuda.mem_get_info(device)
+            # Mirrors model_management.get_free_memory(): adds the PyTorch
+            # allocator cache (reserved − active) back to the OS-visible free
+            # bytes so infer_auto_device_map sees memory that PyTorch can
+            # reuse immediately, not just what the OS considers unallocated.
+            _stats = torch.cuda.memory_stats(device)
+            _cuda_free, _ = torch.cuda.mem_get_info(device)
+            free_bytes: int = int(
+                _cuda_free
+                + _stats["reserved_bytes.all.current"]
+                - _stats["active_bytes.all.current"]
+            )
             max_vram = int(free_bytes * 0.85)
             max_memory: Optional[dict] = {device_key: max_vram, "cpu": "48GiB"}
+            self._vram_at_partition = free_bytes
+            log.info(
+                "DiffPipeline auto-offload: VRAM free=%.0f MB  "
+                "budget (85%%)=%.0f MB  allocator_cache=%.0f MB",
+                free_bytes / (1024 ** 2),
+                max_vram / (1024 ** 2),
+                (_stats["reserved_bytes.all.current"] - _stats["active_bytes.all.current"]) / (1024 ** 2),
+            )
         elif device.type == "mps":
             # MPS doesn't expose free memory; use a conservative fixed budget.
             max_memory = {device_key: "8GiB", "cpu": "48GiB"}
+            self._vram_at_partition = 0
+            log.info("DiffPipeline auto-offload: MPS — fixed budget 8GiB")
         else:
             max_memory = None
-        print(f"[_setup_auto_offload] max_memory={max_memory}")
+            self._vram_at_partition = 0
+            log.info("DiffPipeline auto-offload: CPU device — no memory budget")
 
         # --- 2. Infer device map ---
         # no_split_module_classes prevents splitting a Transformer or ResnetBlock
@@ -1029,24 +1075,24 @@ class DiffPipeline():
         for _, _, module in group_a:
             module.to(device=device)
 
-        # --- 5. Regional compile (skip MPS — Metal inductor issues) ---
-        # Compile BEFORE installing hooks so hooks attach to the OptimizedModule.
+        # --- 5. Compile regions (first partition only) ---
+        # _install_compile_regions wraps each block's forward with
+        # nested_compile_region and compiles the whole UNet once.  On every
+        # subsequent re-partition _regions_installed is already True so
+        # _install_compile_regions is a no-op — only hook positions change,
+        # no recompilation occurs.  MPS is excluded (Metal inductor issues).
         if device.type != "mps":
-            n_blocks = len(group_a) + len(group_b)
-            log.info(
-                "DiffPipeline: torch.compile starting — %d UNet blocks "
-                "(mode=reduce-overhead). This may take 1–3 minutes on first run …",
-                n_blocks,
-            )
-            for path, setter, module in group_a + group_b:
-                log.info("DiffPipeline: compiling block '%s' …", path)
-                compiled = torch.compile(module, mode="default", fullgraph=False)
-                setter(compiled)
-            log.info(
-                "DiffPipeline: torch.compile done — %d blocks compiled. "
-                "Subsequent runs will reuse the cached graph.",
-                n_blocks,
-            )
+            if not self._regions_installed:
+                log.info(
+                    "DiffPipeline auto-offload: installing compile regions "
+                    "(%d blocks) …", len(group_a) + len(group_b)
+                )
+            else:
+                log.info(
+                    "DiffPipeline auto-offload: compile regions already installed "
+                    "— skipping recompile (re-partition pass)"
+                )
+            self._install_compile_regions()
 
         # --- 6. Install load/unload hooks on Group B ---
         # Re-fetch modules after possible compile replacement.
@@ -1082,10 +1128,25 @@ class DiffPipeline():
             self._b_block_paths.append(path)
 
         self._auto_offload_ready = True
+
+        # Compute on-device vs offloaded memory totals for the summary log.
+        def _block_mb(blocks):
+            total = 0
+            for _, _, m in blocks:
+                for p in m.parameters():
+                    total += p.numel() * p.element_size()
+            return total / (1024 ** 2)
+
+        group_a_mb = _block_mb(group_a)
+        group_b_mb = _block_mb(group_b)
         log.info(
-            "DiffPipeline auto-offload: setup complete — %d Group-A blocks, "
-            "%d Group-B blocks, %d hooks installed",
-            len(group_a), len(group_b), len(self._b_hooks),
+            "DiffPipeline auto-offload: partition complete — "
+            "Group A %d blocks (%.0f MB on %s)  |  "
+            "Group B %d blocks (%.0f MB CPU-hooked)  |  "
+            "%d hooks installed",
+            len(group_a), group_a_mb, device,
+            len(group_b), group_b_mb,
+            len(self._b_hooks),
         )
 
     def _reset_auto_offload(self) -> None:
@@ -1099,6 +1160,47 @@ class DiffPipeline():
         self._b_hooks.clear()
         self._b_block_paths.clear()
         self._auto_offload_ready = False
+
+    # ------------------------------------------------------------------
+    # Compile-region installation (called once from _setup_auto_offload)
+    # ------------------------------------------------------------------
+
+    def _install_compile_regions(self) -> None:
+        """Compile each UNet block individually with torch.compile.
+
+        Called once from _setup_auto_offload (first partition only).
+        After this call, re-partitioning (_reset_auto_offload +
+        _setup_auto_offload) only repositions pre/post hooks — the
+        _regions_installed guard prevents any recompilation.
+
+        Note: torch.compiler.nested_compile_region was attempted here but
+        is not usable — it generates get_attr nodes with dotted paths
+        (e.g. repeated_subgraph5.repeated_subgraph0) that inductor's
+        aot_autograd cannot resolve on nn.Module hierarchies.  Per-block
+        torch.compile is the reliable alternative: each block is compiled
+        separately and replaced via setter(), giving the same stable graph
+        cache across re-partitions.
+
+        No-op after the first call (_regions_installed guard).
+        """
+        if self._regions_installed:
+            return
+
+        # Set early so an exception in torch.compile cannot cause re-entry.
+        self._regions_installed = True
+
+        n_compiled = 0
+        for path, setter, module in self._iter_unet_blocks():
+            log.debug(
+                "DiffPipeline [compile-regions]: compiling block '%s'", path
+            )
+            setter(torch.compile(module, mode="default", fullgraph=False))
+            n_compiled += 1
+
+        log.info(
+            "DiffPipeline [compile-regions]: %d blocks compiled (per-block).",
+            n_compiled,
+        )
 
     # ------------------------------------------------------------------
     # Phase 5 — LoRA synchronisation
@@ -1384,9 +1486,36 @@ class DiffPipeline():
         device = x.device
         if self._auto_offload:
             # Partition UNet into Group A (device) / Group B (CPU) with hooks.
-            # Done lazily on the first call; re-runs after LoRA swaps.
+            # Done lazily on the first call; re-checks VRAM pressure every step
+            # and re-partitions when it shifts significantly (mirrors reForge's
+            # dynamic load_models_gpu budget).  Because _install_compile_regions
+            # is a no-op after the first call, re-partition only moves hooks.
             if not self._auto_offload_ready:
                 self._setup_auto_offload(device)
+            elif device.type == "cuda" and self._vram_at_partition > 0:
+                _stats = torch.cuda.memory_stats(device)
+                _cuda_free, _ = torch.cuda.mem_get_info(device)
+                _free_now: int = int(
+                    _cuda_free
+                    + _stats["reserved_bytes.all.current"]
+                    - _stats["active_bytes.all.current"]
+                )
+                _delta_mb = (_free_now - self._vram_at_partition) / (1024 ** 2)
+                log.debug(
+                    "DiffPipeline VRAM pressure: free_now=%.0f MB  "
+                    "at_partition=%.0f MB  delta=%+.0f MB",
+                    _free_now / (1024 ** 2),
+                    self._vram_at_partition / (1024 ** 2),
+                    _delta_mb,
+                )
+                if abs(_free_now - self._vram_at_partition) > 512 * 1024 * 1024:
+                    log.info(
+                        "DiffPipeline: VRAM pressure shifted %+.0f MB — "
+                        "re-partitioning (Group A/B boundary will move).",
+                        _delta_mb,
+                    )
+                    self._reset_auto_offload()
+                    self._setup_auto_offload(device)
         elif self._sequential_offload:
             # Install per-block accelerate hooks on the first call.
             # After that the hooks handle GPU↔CPU movement automatically;
