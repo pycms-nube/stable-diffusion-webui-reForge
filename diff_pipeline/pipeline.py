@@ -278,6 +278,13 @@ class ForgeAttnProcessor:
       * ``transformer_options["patches"]["attn2_patch"]``
         Q/K/V modifier before standard attention.
         Fn signature: ``(q, k, v, extra_options) → (q, k, v)``
+      * ``transformer_options["clip_attn_norm"]`` (bool, default False)
+        Apply soft per-token L2 normalisation to encoder_hidden_states before the
+        K/V projections: divide each token embedding by its own norm, but only when
+        that norm exceeds 1.0 — leaving normally-scaled tokens untouched while
+        clamping outliers (e.g. from high prompt weights) to the unit sphere.
+        Preserves directional/semantic content; prevents extreme Q·K dot-products.
+        Enabled via ``--forge-diffusers-clip-attn-norm``.
     """
 
     def __init__(self, block_name: str, block_idx: int, transformer_idx: int) -> None:
@@ -300,6 +307,7 @@ class ForgeAttnProcessor:
             transformer_options = {}
         transformer_patches = transformer_options.get("patches", {})
         transformer_patches_replace = transformer_options.get("patches_replace", {})
+        clip_attn_norm: bool = transformer_options.get("clip_attn_norm", False)
 
         # extra_options mirrors ldm's convention so patch fns get the same dict
         extra_options = {
@@ -347,6 +355,8 @@ class ForgeAttnProcessor:
             encoder_hidden_states = attn.norm_encoder_hidden_states(
                 encoder_hidden_states
             )
+        # clip_attn_norm: normalization is applied in apply_model() before the
+        # UNet forward pass so it runs outside the compiled graph region.
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
@@ -552,6 +562,7 @@ class DiffPipeline():
         instance._seq_hooks_installed = False
         instance._compiled = False
         instance._mps_optimized = False
+        instance._clip_attn_norm = getattr(cmd_opts, 'forge_diffusers_clip_attn_norm', False)
         instance._auto_offload_ready = False
         instance._b_hooks = []
         instance._b_block_paths = []
@@ -623,6 +634,7 @@ class DiffPipeline():
         self._seq_hooks_installed: bool = False
         self._compiled: bool = False
         self._mps_optimized: bool = False
+        self._clip_attn_norm: bool = getattr(cmd_opts, 'forge_diffusers_clip_attn_norm', False)
 
         # Auto-offload state — populated lazily on first apply_model() call.
         self._auto_offload_ready: bool = False
@@ -1470,6 +1482,9 @@ class DiffPipeline():
         if transformer_options is None:
             transformer_options = {}
 
+        if self._clip_attn_norm:
+            transformer_options["clip_attn_norm"] = True
+
         log.debug("[DiffPipeline] apply_model called — sigma=%s, x.shape=%s", t, x.shape)
 
         sigma = t
@@ -1584,6 +1599,20 @@ class DiffPipeline():
             ).expand(text_embeds.shape[0], -1)
 
         added_cond_kwargs = {"text_embeds": text_embeds, "time_ids": time_ids}
+
+        # --- 3b. CLIP attention norm soft-clamping (outside compiled graph) ---
+        # CLIP token embeddings have an ~8x natural norm variance (empirically
+        # 1.2–212 with mean ~26).  High-norm tokens attract disproportionate
+        # cross-attention solely because of embedding magnitude, not semantics.
+        # Clamp any token whose L2 norm exceeds 3× the batch mean to that
+        # threshold; tokens at or below the threshold are left unchanged.
+        # Done here (not inside ForgeAttnProcessor) to avoid dynamo graph breaks.
+        if self._clip_attn_norm and encoder_hidden_states is not None:
+            norms_kd = encoder_hidden_states.norm(dim=-1, keepdim=True)
+            threshold = norms_kd.mean() * 3.0
+            encoder_hidden_states = (
+                encoder_hidden_states / norms_kd.clamp(min=threshold) * threshold
+            )
 
         # --- 4. ControlNet residual mapping ---
         # ldm: control["input"] is a list that gets pop()d (reverse order).
