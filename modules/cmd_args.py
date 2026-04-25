@@ -183,6 +183,15 @@ parser.add_argument(
     default=False,
 )
 parser.add_argument(
+    "--forge-diffusers-clip-attn-norm",
+    action="store_true",
+    help="When using --forge-diffusers-pipeline, apply a functional LayerNorm to CLIP encoder "
+         "hidden states inside each cross-attention block before the K/V projections. "
+         "Prevents abnormal attention patterns from high-weight prompt tokens (e.g. (word:2.0)). "
+         "Equivalent to Diffusers cross_attention_norm='layer_norm' but without learned parameters.",
+    default=False,
+)
+parser.add_argument(
     "--allow-download",
     action="store_true",
     help="Allow huggingface_hub / diffusers / transformers to download files from the internet. "
