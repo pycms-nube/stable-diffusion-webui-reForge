@@ -1630,17 +1630,34 @@ class DiffPipeline():
                 )
                 self._compiled = True  # mark so we don't re-check every step
             else:
+                # Point the inductor cache at a persistent, model-specific directory
+                # so compiled kernel artifacts survive process restarts.  The cache
+                # is keyed by the WebUI model hash; a device fingerprint check voids
+                # stale entries (different GPU / PyTorch version / CUDA).
+                # LoRA hotswap is handled automatically: inductor creates separate
+                # cache entries for each distinct graph (base model vs. each LoRA
+                # combination) within the same directory.
+                from diff_pipeline import compile_cache as _cc
+                _model_hash = getattr(self.sd_model, "sd_model_hash", None)
+                _cache_dir = _cc.activate(_model_hash, device)
+
+                _cache_note = (
+                    f"Compiled artifacts cached at:\n    {_cache_dir}\n"
+                    f"    Subsequent loads of the same model will skip most of this compile."
+                    if _cache_dir else
+                    "No persistent cache — artifacts will not survive process restart."
+                )
                 log.warning(
                     "DiffPipeline: torch.compile is about to begin (UNet dtype=%s). "
                     "The UI will appear frozen for 1–3 minutes while the inductor "
-                    "captures and optimises the compute graph — this is normal. "
-                    "Subsequent runs will reuse the cached graph and start instantly.",
+                    "captures and optimises the compute graph — this is normal.\n%s",
                     unet_dtype,
+                    _cache_note,
                 )
                 print(
                     f"\n[DiffPipeline] *** torch.compile starting (dtype={unet_dtype}) ***\n"
                     f"    The UI will be unresponsive for ~1-3 min during graph capture.\n"
-                    f"    This only happens once per session.\n"
+                    f"    {_cache_note}\n"
                 )
                 if device == "mps":
                     # MPS don't have max auto tune, inductor use as default
