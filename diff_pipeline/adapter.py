@@ -560,10 +560,31 @@ def _build_model_sampling_from_pipe(diffusers_unet, scheduler=None):
                         f"={ac32[-1].item():.2e} — stamping zsnr=True"
                     )
                 instance.set_sigmas(sigmas)
+
+                # If ZSNR is required but alphas_cumprod is not ZSNR-rescaled
+                # (rescale_betas_zero_snr=True in config but raw schedule stored),
+                # apply the rescaling NOW — otherwise set_sigmas() overwrites the
+                # ZSNR-correct schedule that _register_schedule computed internally.
+                if zsnr and not ztsnr_from_ac:
+                    ab = 1.0 / ((sigmas ** 2) + 1.0)
+                    ab_sqrt = ab.sqrt()
+                    ab_sqrt_0 = ab_sqrt[0].clone()
+                    ab_sqrt_T = ab_sqrt[-1].clone()
+                    ab_sqrt = (ab_sqrt - ab_sqrt_T) * ab_sqrt_0 / (ab_sqrt_0 - ab_sqrt_T)
+                    ab_rescaled = ab_sqrt ** 2
+                    ab_rescaled[-1] = 4.8973451890853435e-08
+                    sigmas_zsnr = ((1.0 - ab_rescaled) / ab_rescaled) ** 0.5
+                    instance.set_sigmas(sigmas_zsnr)
+                    sigmas = sigmas_zsnr
+                    print(
+                        f"[DiffusersModelAdapter] ZSNR flag set but alphas_cumprod not rescaled — "
+                        f"applied ZeroSNR rescaling: σ_max={sigmas_zsnr[-1].item():.1f}"
+                    )
+
                 schedule_source = (
                     f"scheduler.alphas_cumprod (float32, T={len(ac32)}, "
                     f"σ_min={sigmas[0].item():.4f}, σ_max={sigmas[-1].item():.4f}"
-                    f"{', ZTSNR' if ztsnr_from_ac else ''})"
+                    f"{', ZTSNR' if (ztsnr_from_ac or (zsnr and not ztsnr_from_ac)) else ''})"
                 )
             except Exception as _e:
                 schedule_source += f"  [alphas_cumprod override failed: {_e}]"
@@ -871,7 +892,9 @@ class DiffusersModelAdapter:
         self.filename             = checkpoint_info.filename
         self.current_lora_hash    = ""
         self.latent_channels      = 16 if model_type == "sd3" else 4
-        self.parameterization     = "eps"
+        _unet_cfg = getattr(pipe.unet, "config", None)
+        _pred_type = getattr(_unet_cfg, "prediction_type", "epsilon") if _unet_cfg else "epsilon"
+        self.parameterization     = "v" if _pred_type == "v_prediction" else "eps"
 
         # ---- conditioning key -------------------------------------------
         self.cond_stage_key = "crossattn"
