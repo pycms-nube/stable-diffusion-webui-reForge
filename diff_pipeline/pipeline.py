@@ -210,6 +210,94 @@ def _derive_hf_config_from_ldm(merged_unet_cfg: dict) -> tuple[dict, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# V-prediction + ZeroSNR helpers
+# ---------------------------------------------------------------------------
+
+def _rescale_zero_terminal_snr_sigmas(sigmas: "torch.Tensor") -> "torch.Tensor":
+    """Rescale a sigma schedule to enforce zero terminal SNR (Lin et al. 2023).
+
+    Equivalent to nodes_model_advanced.rescale_zero_terminal_snr_sigmas.
+    Transforms the schedule so alphas_cumprod[-1] → 0 (sigma[-1] → ∞),
+    matching checkpoints that were trained with a zero-SNR noise schedule.
+    """
+    alphas_cumprod = 1.0 / ((sigmas ** 2) + 1.0)
+    ab_sqrt = alphas_cumprod.sqrt()
+    ab_sqrt_0 = ab_sqrt[0].clone()
+    ab_sqrt_T = ab_sqrt[-1].clone()
+    ab_sqrt = (ab_sqrt - ab_sqrt_T) * ab_sqrt_0 / (ab_sqrt_0 - ab_sqrt_T)
+    alphas_bar = ab_sqrt ** 2
+    alphas_bar[-1] = 4.8973451890853435e-08   # numerical zero (from ComfyUI)
+    return ((1.0 - alphas_bar) / alphas_bar) ** 0.5
+
+
+def _ensure_vpred_zsnr(model_sampling) -> None:
+    """Auto-apply ZeroSNR to a V_PREDICTION model_sampling when it is not yet active.
+
+    Mirrors the 'Advanced Model Sampling for reForge' script behaviour
+    (Discrete / v_prediction / Zero SNR) so DiffPipeline works correctly for
+    v-pred checkpoints without requiring the user to enable that script.
+
+    Logic
+    -----
+    - If model_sampling is not V_PREDICTION → no-op.
+    - If ZSNR is already active (model_sampling.zsnr or sigma_max > 100) → log and return.
+    - Otherwise rescale the sigma schedule in-place and stamp zsnr = True.
+
+    Why in-place?
+    The model_sampling object is shared with unet_patcher.model.model_sampling, so
+    the ldm sampler path also benefits from the corrected schedule automatically.
+    The object is recreated per model load, so there is no cross-model contamination.
+    """
+    # Check via MRO names — V_PREDICTION is a mixin so isinstance() narrows
+    # the type and mypy loses sigma_max / sigmas / set_sigmas from the
+    # ModelSamplingDiscrete base.  Checking the name avoids that narrowing.
+    is_vpred = any(
+        c.__name__ == "V_PREDICTION"
+        for c in type(model_sampling).__mro__
+    )
+    if not is_vpred:
+        return
+
+    sigma_max = float(getattr(model_sampling, "sigma_max", 0.0))
+    zsnr_flag = getattr(model_sampling, "zsnr", False)
+
+    # Trust sigma_max, not the flag.  _build_model_sampling_from_pipe can set
+    # zsnr=True from scheduler.config.rescale_betas_zero_snr but then call
+    # set_sigmas(scheduler.alphas_cumprod) which overwrites with non-ZSNR sigmas,
+    # leaving the flag set but the schedule un-rescaled (sigma_max ≈ 14.6).
+    if sigma_max > 100.0:
+        log.info(
+            "DiffPipeline v-pred: ZeroSNR already active in sigmas "
+            "(sigma_max=%.2f) — no rescaling needed.",
+            sigma_max,
+        )
+        return
+    if zsnr_flag:
+        log.info(
+            "DiffPipeline v-pred: zsnr flag is True but sigma_max=%.4f (≤100) — "
+            "sigmas were overwritten after ZSNR init; will re-apply rescaling.",
+            sigma_max,
+        )
+
+    log.info(
+        "DiffPipeline v-pred: sigma_max=%.4f — ZeroSNR not detected; "
+        "auto-applying rescaling (mirrors Advanced Model Sampling / Zero SNR).",
+        sigma_max,
+    )
+    sigmas = getattr(model_sampling, "sigmas", None)
+    if sigmas is None:
+        log.warning("DiffPipeline v-pred: model_sampling has no sigmas — skipping ZSNR.")
+        return
+    new_sigmas = _rescale_zero_terminal_snr_sigmas(sigmas)
+    model_sampling.set_sigmas(new_sigmas)   # type: ignore[union-attr]
+    model_sampling.zsnr = True              # type: ignore[union-attr]
+    log.info(
+        "DiffPipeline v-pred: ZeroSNR applied — new sigma_max=%.2f.",
+        float(getattr(model_sampling, "sigma_max", float("nan"))),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Block address table: HF (b_idx, a_idx) → ldm block index
 # Derived from unet_to_diffusers() with num_res_blocks=[2,2,2].
 #   down: n = 1 + 3*b_idx + a_idx   (only b_idx=1,2 have attentions)
@@ -547,6 +635,7 @@ class DiffPipeline():
         instance.unet_patcher = unet_patcher
         instance.sd_model = sd_model
         instance.model_sampling = unet_patcher.model.model_sampling
+        _ensure_vpred_zsnr(instance.model_sampling)
 
         from modules.shared_cmd_options import cmd_opts
         instance._auto_offload = getattr(cmd_opts, 'forge_diffusers_auto_offload', False)
@@ -618,6 +707,7 @@ class DiffPipeline():
         self.unet_patcher = unet_patcher
         self.sd_model = sd_model
         self.model_sampling = unet_patcher.model.model_sampling
+        _ensure_vpred_zsnr(self.model_sampling)
 
         from modules.shared_cmd_options import cmd_opts
         # Priority: auto_offload > sequential_offload > offload > default (whole-model on device).
@@ -693,7 +783,7 @@ class DiffPipeline():
             "COSMOS_RFLOW": "Cosmos rectified-flow",
         }
         pred_type = next(
-            (desc for name, desc in _pred_names.items() if name in ms_bases),
+            (_pred_names[base] for base in ms_bases if base in _pred_names),
             f"unknown ({ms_bases})"
         )
 

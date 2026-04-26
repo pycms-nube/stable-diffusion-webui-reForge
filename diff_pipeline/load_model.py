@@ -365,6 +365,28 @@ def dummy_sdxl_hijack(checkpoint_info) -> Any:
         use_safetensors=checkpoint_info.is_safetensors,
     )
 
+    # --- V-prediction detection from safetensors sentinel keys ---------------
+    # diffusers from_single_file() defaults to prediction_type="epsilon" when the
+    # checkpoint has no embedded diffusers config.  V-pred SDXL checkpoints (e.g.
+    # anime models trained with v-parameterization) signal this via empty sentinel
+    # tensors at the top level of the state dict: "v_pred" and optionally "ztsnr".
+    # Patch both UNet and scheduler configs here so _build_model_sampling_from_pipe
+    # picks up V_PREDICTION before it builds model_sampling.
+    if getattr(checkpoint_info, 'is_safetensors', False):
+        _st_keys = _read_safetensors_tensor_keys(checkpoint_info.filename) or set()
+        if "v_pred" in _st_keys:
+            _unet_cfg   = getattr(pipe.unet,      "config", None)
+            _sched_cfg  = getattr(getattr(pipe, "scheduler", None), "config", None)
+            if _unet_cfg  is not None: _unet_cfg.prediction_type  = "v_prediction"
+            if _sched_cfg is not None: _sched_cfg.prediction_type = "v_prediction"
+            print("[diffusers path hijack] V-prediction detected from 'v_pred' key — "
+                  "patched unet.config and scheduler.config")
+            if "ztsnr" in _st_keys:
+                if _sched_cfg is not None:
+                    _sched_cfg.rescale_betas_zero_snr = True
+                print("[diffusers path hijack] ZTSNR detected from 'ztsnr' key — "
+                      "patched scheduler.config.rescale_betas_zero_snr=True")
+
     from modules.shared_cmd_options import cmd_opts
     _auto_offload = getattr(cmd_opts, 'forge_diffusers_auto_offload', False)
     _seq_offload  = getattr(cmd_opts, 'forge_diffusers_sequential_offload', False)
