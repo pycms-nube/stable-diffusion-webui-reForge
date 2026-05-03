@@ -374,7 +374,8 @@ class Sampler:
                 p.extra_generation_params['DPM++ 2M solver'] = solver_type
 
         _SURE_SAMPLERS = {
-            'sample_sure', 'sample_sure_wavelet', 'sample_sure_adaptive',
+            'sample_sure', 'sample_sure_wavelet', 'sample_sure_wavelet_auto',
+            'sample_sure_adaptive',
             'sample_dpmpp_2m_sure', 'sample_dpmpp_2m_sde_sure',
             'sample_dpmpp_3m_sde_sure', 'sample_dpmpp_2m_sde_sure_adaptive',
             'sample_dpmpp_2s_a_sure', 'sample_dpmpp_2s_a_sure_adaptive',
@@ -422,6 +423,25 @@ class Sampler:
             if 'sure_wavelet_warmup_steps' in _sure_sig:
                 sure_wavelet_warmup_steps = getattr(shared.opts, 'sure_wavelet_warmup_steps', 0)
                 extra_params_kwargs['sure_wavelet_warmup_steps'] = sure_wavelet_warmup_steps
+            if 'sure_wavelet_lp_frac' in _sure_sig:
+                sure_wavelet_lp_frac = getattr(shared.opts, 'sure_wavelet_lp_frac', 1.0)
+                extra_params_kwargs['sure_wavelet_lp_frac'] = sure_wavelet_lp_frac
+            # Calibration params for SURE Wavelet Auto
+            if 'sure_wavelet_cal_steps' in _sure_sig:
+                extra_params_kwargs['sure_wavelet_cal_steps'] = int(getattr(shared.opts, 'sure_wavelet_cal_steps', 5))
+            if 'sure_wavelet_cal_wavelets' in _sure_sig:
+                _raw = getattr(shared.opts, 'sure_wavelet_cal_wavelets', 'haar,db2,db4,db6,sym4')
+                extra_params_kwargs['sure_wavelet_cal_wavelets'] = tuple(s.strip() for s in _raw.split(',') if s.strip())
+            if 'sure_wavelet_cal_levels' in _sure_sig:
+                # Accepts "min,max" or a single value; passes as int tuple to the sampler
+                _raw = getattr(shared.opts, 'sure_wavelet_cal_levels', '1,6')
+                extra_params_kwargs['sure_wavelet_cal_levels'] = tuple(int(s.strip()) for s in _raw.split(',') if s.strip())
+            if 'sure_wavelet_bo_trials' in _sure_sig:
+                extra_params_kwargs['sure_wavelet_bo_trials'] = int(getattr(shared.opts, 'sure_wavelet_bo_trials', 40))
+            if 'sure_wavelet_bo_patience' in _sure_sig:
+                extra_params_kwargs['sure_wavelet_bo_patience'] = int(getattr(shared.opts, 'sure_wavelet_bo_patience', 8))
+            if 'sure_wavelet_bo_cv_warn' in _sure_sig:
+                extra_params_kwargs['sure_wavelet_bo_cv_warn'] = float(getattr(shared.opts, 'sure_wavelet_bo_cv_warn', 0.4))
             p.extra_generation_params['SURE alpha']         = sure_alpha
             p.extra_generation_params['SURE n_mc']          = sure_n_mc
             p.extra_generation_params['SURE eps']           = sure_eps

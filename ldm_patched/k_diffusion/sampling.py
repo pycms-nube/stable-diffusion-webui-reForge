@@ -5306,6 +5306,7 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
                               adam_wd=0.01,
                               wavelet='db4', wavelet_level=3,
                               approx_coeff=2.0, warmup_steps=0,
+                              lp_frac=1.0,
                               grad_mode='approx'):
     """SURE-Wavelet: per-subband SURE gradient correction.
 
@@ -5325,6 +5326,14 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
                   truly independent per-subband guidance with no cross-subband Jacobian leakage.
       'full'    — full ∇SURE: adds 2σ²·∇tr{J_D} term on top of vjp; requires
                   use_jac=True, falls back to vjp behavior otherwise.
+
+    lp_frac : float in [0.0, 1.0] (default 1.0)
+        Low-pass cutoff fraction over wavelet detail levels.
+        0.0 = correct approximation subband only (structure-only).
+        1.0 = correct all subbands (default behavior).
+        Values between correct approximation + floor(lp_frac × wavelet_level)
+        coarsest detail levels — acts as a low-pass filter over wavelet bands.
+        Detail subbands beyond the cutoff are passed through unchanged.
 
     Structure of wavelet coefficients (output of wavedec2 at 'level' L):
       [cA,  (cH_L, cV_L, cD_L),  ...,  (cH_1, cV_1, cD_1)]
@@ -5683,6 +5692,11 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
         return corrected, m_c, v_c, raw_grad_rms, eff_grad_rms, adam_ratio
 
     # ── Per-subband correction ───────────────────────────────────────────────
+    # lp_frac acts as a low-pass filter: only the approximation subband (idx 0)
+    # and the floor(lp_frac * (n_sb-1)) coarsest detail levels are corrected.
+    # Detail subbands beyond the cutoff are passed through unchanged.
+    _n_detail_correct = int(lp_frac * (n_sb - 1))  # 0 = approx only, n_sb-1 = all
+
     corrected_coeffs  = []
     sure_subband_vals = []
 
@@ -5712,6 +5726,15 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
             )
         else:
             # Detail subbands at this level — tuple(cH, cV, cD)
+            if sb_idx > _n_detail_correct:
+                # Beyond LP cutoff — pass through unchanged, accumulate SURE for logging
+                corrected_coeffs.append(x0_sb)
+                for sub_i in range(3):
+                    sure_subband_vals.append(
+                        float(-res_sb[sub_i].numel() * sigma2 + (res_sb[sub_i] ** 2).sum())
+                    )
+                continue
+
             prev_m = (adam_state['wavelet_m'][sb_idx]
                       if (adam_state and 'wavelet_m' in adam_state
                           and adam_state['wavelet_m'][sb_idx] is not None)
@@ -5917,6 +5940,7 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
                         sure_wavelet='db4', sure_wavelet_level=3,
                         sure_approx_coeff=2.0, sure_csv_path=None,
                         sure_sigma_ema=0.0, sure_wavelet_warmup_steps=0,
+                        sure_wavelet_lp_frac=1.0,
                         sure_grad_mode='vjp'):
     """SURE-Wavelet — Euler Ancestral variant.
 
@@ -5969,9 +5993,11 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
     n_steps = len(sigmas) - 1
     _sure_logger.info(
         "SURE-Wavelet sampler: %d steps  alpha=%.4f  n_mc=%d  jac_interval=%d  "
-        "wavelet=%s  level=%d  adam=%s  grad_mode=%s  approx_coeff=%.2f  sigma_ema=%.2f  warmup=%d",
+        "wavelet=%s  level=%d  lp_frac=%.2f  adam=%s  grad_mode=%s  "
+        "approx_coeff=%.2f  sigma_ema=%.2f  warmup=%d",
         n_steps, sure_alpha, sure_n_mc, _dyn_jac_interval,
-        sure_wavelet, sure_wavelet_level, sure_adam_mode, sure_grad_mode,
+        sure_wavelet, sure_wavelet_level, sure_wavelet_lp_frac,
+        sure_adam_mode, sure_grad_mode,
         sure_approx_coeff, sure_sigma_ema, sure_wavelet_warmup_steps,
     )
 
@@ -6015,6 +6041,7 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
             wavelet=sure_wavelet, wavelet_level=sure_wavelet_level,
             approx_coeff=sure_approx_coeff,
             warmup_steps=sure_wavelet_warmup_steps,
+            lp_frac=sure_wavelet_lp_frac,
             grad_mode=sure_grad_mode,
         )
 
@@ -6050,6 +6077,250 @@ def sample_sure_wavelet(model, x, sigmas, extra_args=None, callback=None, disabl
         torch.cuda.empty_cache()
 
     return x
+
+
+def _sure_score_config(snapshots, wav_name, level, lp_frac):
+    """Sum SURE score for one (wavelet, level, lp_frac) config over pre-computed snapshots.
+
+    snapshots: list of (residual_tensor, sigma2_float) pairs collected during
+               calibration — one per denoising step.  All expensive model forwards
+               are already done; this function only performs cheap DWT arithmetic.
+
+    Returns a single float: sum of per-snapshot SURE values for the given config.
+    """
+    try:
+        import ptwt
+        import pywt as _pywt
+    except ImportError:
+        return float('inf')
+
+    try:
+        _wav = _pywt.Wavelet(wav_name)
+        total = 0.0
+        for residual, sigma2 in snapshots:
+            res_coeffs = ptwt.wavedec2(residual, _wav, level=level, mode='reflect')
+            n_sb       = len(res_coeffs)
+            n_detail   = int(lp_frac * (n_sb - 1))
+            total += float(-res_coeffs[0].numel() * sigma2 + (res_coeffs[0] ** 2).sum())
+            for sb_idx in range(1, n_detail + 1):
+                for sub_i in range(3):
+                    total += float(
+                        -res_coeffs[sb_idx][sub_i].numel() * sigma2
+                        + (res_coeffs[sb_idx][sub_i] ** 2).sum()
+                    )
+        return total
+    except Exception:
+        return float('inf')
+
+
+def sample_sure_wavelet_auto(model, x, sigmas, extra_args=None, callback=None, disable=None,
+                              sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
+                              sure_jac_interval=2,
+                              sure_adam_mode='none', sure_adam_beta1=0.9,
+                              sure_adam_beta2=0.999, sure_adam_wd=0.01,
+                              sure_approx_coeff=2.0, sure_csv_path=None,
+                              sure_sigma_ema=0.0, sure_wavelet_warmup_steps=0,
+                              sure_grad_mode='vjp',
+                              sure_wavelet_cal_steps=5,
+                              sure_wavelet_cal_wavelets=('haar', 'db2', 'db4', 'db6', 'sym4'),
+                              sure_wavelet_cal_levels=(1, 6),
+                              sure_wavelet_bo_trials=40,
+                              sure_wavelet_bo_patience=8,
+                              sure_wavelet_bo_cv_warn=0.4):
+    """SURE-Wavelet Auto — Bayesian-optimised wavelet config, then SURE-Wavelet.
+
+    Search space (mixed discrete/continuous):
+      wavelet  — suggest_categorical from sure_wavelet_cal_wavelets
+      level    — suggest_int over [lvl_min, lvl_max] from sure_wavelet_cal_levels
+      lp_frac  — suggest_float over [0.0, 1.0]  (continuous; no fixed grid)
+
+    Phase 1 (data collection): Run sure_wavelet_cal_steps denoising steps on an
+    independent copy of x.  Each step yields one (residual, sigma2) snapshot.
+    sure_wavelet_cal_steps model forwards total — no extra cost per BO trial.
+
+    Phase 2 (BO search): Optuna TPE minimises summed SURE score across snapshots.
+    Each trial is cheap (only DWT arithmetic).  Early-stop fires when the best
+    value has not improved for sure_wavelet_bo_patience consecutive trials.
+
+    Phase 3 (advisory): Compute coefficient of variation (std/|mean|) of the
+    winner's per-step SURE values.  High CV → noisy objective → log a warning
+    recommending more cal_steps.
+
+    Falls back to an exhaustive grid search when optuna is not installed.
+
+    sure_wavelet_cal_levels : (min, max) int tuple for suggest_int, or a sequence
+        of ints whose min/max is used.  Default (1, 6) searches all valid levels.
+    """
+    extra_args    = {} if extra_args is None else extra_args
+    s_in          = x.new_ones([x.shape[0]])
+    noise_sampler = default_noise_sampler(x, seed=extra_args.get('seed', None))
+    n_steps       = len(sigmas) - 1
+    cal_steps     = min(int(sure_wavelet_cal_steps), n_steps)
+
+    # Resolve level range
+    _lvls  = list(sure_wavelet_cal_levels)
+    lvl_min, lvl_max = (min(_lvls), max(_lvls)) if len(_lvls) >= 2 else (_lvls[0], _lvls[0])
+    cal_wavelet_list  = list(sure_wavelet_cal_wavelets)
+
+    _sure_logger.info(
+        "SURE-Wavelet Auto: collecting %d calibration snapshots  "
+        "wavelets=%s  level=[%d,%d]  bo_trials=%d  bo_patience=%d",
+        cal_steps, cal_wavelet_list, lvl_min, lvl_max,
+        int(sure_wavelet_bo_trials), int(sure_wavelet_bo_patience),
+    )
+
+    # ── Phase 1: collect (residual, sigma2) snapshots ───────────────────────
+    snapshots = []
+    x_cal     = x.clone()
+    for i in range(cal_steps):
+        sigma      = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        sigma_val  = sigma.item()
+
+        with torch.no_grad():
+            x0_hat = model(x_cal, sigma * s_in, **extra_args).detach()
+
+        sigma_hat_0 = min(
+            _pca_noise_estimate(x0_hat, min_sigma=float(sure_eps)),
+            sigma_val,
+        )
+        residual = (x_cal - x0_hat).detach()
+        snapshots.append((residual, sigma_hat_0 ** 2))
+
+        if float(sigma_next) > 0:
+            sigma_down, sigma_up = get_ancestral_step(sigma, sigma_next, eta=1.0)
+            d     = (x_cal - x0_hat) / sigma
+            x_cal = x_cal + d * (sigma_down - sigma)
+            x_cal = x_cal + sigma_up * noise_sampler(sigma, sigma_next)
+
+    del x_cal
+
+    # ── Phase 2: Bayesian optimisation (or grid fallback) ────────────────────
+    best_wavelet = cal_wavelet_list[0]
+    best_level   = max(1, min(3, lvl_max))
+    best_lp_frac = 1.0
+    n_trials_run = 0
+
+    try:
+        import optuna as _optuna
+        _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+
+        _no_improve = [0]
+        _best_val   = [float('inf')]
+
+        def _bo_callback(study, trial):
+            val = study.best_value
+            if val < _best_val[0]:
+                _best_val[0]   = val
+                _no_improve[0] = 0
+            else:
+                _no_improve[0] += 1
+            if _no_improve[0] >= int(sure_wavelet_bo_patience):
+                study.stop()
+
+        def _objective(trial):
+            wav   = trial.suggest_categorical('wavelet', cal_wavelet_list)
+            level = trial.suggest_int('level', lvl_min, lvl_max)
+            lpf   = trial.suggest_float('lp_frac', 0.0, 1.0)
+            return _sure_score_config(snapshots, wav, level, lpf)
+
+        study = _optuna.create_study(
+            direction='minimize',
+            sampler=_optuna.samplers.TPESampler(seed=42, n_startup_trials=10),
+        )
+        study.optimize(
+            _objective,
+            n_trials=int(sure_wavelet_bo_trials),
+            callbacks=[_bo_callback],
+            show_progress_bar=False,
+        )
+
+        best         = study.best_params
+        best_wavelet = best['wavelet']
+        best_level   = best['level']
+        best_lp_frac = best['lp_frac']
+        n_trials_run = len(study.trials)
+
+        # Log top-3
+        ranked = sorted(
+            [t for t in study.trials if t.value is not None],
+            key=lambda t: t.value,
+        )
+        for rank, t in enumerate(ranked[:3], 1):
+            p = t.params
+            _sure_logger.info(
+                "SURE-Wavelet Auto  #%d: wavelet=%s  level=%d  lp_frac=%.3f  sure=%.2f",
+                rank, p['wavelet'], p['level'], p['lp_frac'], t.value,
+            )
+
+    except ImportError:
+        # Fallback: exhaustive grid over wavelets × integer levels × fixed lp_frac list
+        _sure_logger.warning(
+            "optuna not installed — falling back to grid search. "
+            "Install with: pip install optuna"
+        )
+        import itertools
+        _lp_grid   = [0.0, 0.25, 0.5, 0.75, 1.0]
+        _grid      = list(itertools.product(
+            cal_wavelet_list,
+            range(lvl_min, lvl_max + 1),
+            _lp_grid,
+        ))
+        _scores    = [_sure_score_config(snapshots, w, lv, lf) for w, lv, lf in _grid]
+        _best_idx  = int(min(range(len(_scores)), key=lambda j: _scores[j]))
+        best_wavelet, best_level, best_lp_frac = _grid[_best_idx]
+        n_trials_run = len(_grid)
+
+        ranked_grid = sorted(range(len(_scores)), key=lambda j: _scores[j])
+        for rank, idx in enumerate(ranked_grid[:3], 1):
+            w, lv, lf = _grid[idx]
+            _sure_logger.info(
+                "SURE-Wavelet Auto (grid)  #%d: wavelet=%s  level=%d  lp_frac=%.2f  "
+                "sure=%.2f", rank, w, lv, lf, _scores[idx],
+            )
+
+    _sure_logger.info(
+        "SURE-Wavelet Auto: using wavelet=%s  level=%d  lp_frac=%.3f  "
+        "(%d evaluations)",
+        best_wavelet, best_level, best_lp_frac, n_trials_run,
+    )
+
+    # ── Phase 3: advisory — check if cal_steps was sufficient ───────────────
+    if len(snapshots) > 1:
+        import statistics as _stat
+        per_step = [
+            _sure_score_config([snap], best_wavelet, best_level, best_lp_frac)
+            for snap in snapshots
+        ]
+        cv = _stat.stdev(per_step) / (abs(_stat.mean(per_step)) + 1e-8)
+        if cv > float(sure_wavelet_bo_cv_warn):
+            _sure_logger.warning(
+                "SURE-Wavelet Auto: winner SURE CV=%.3f > %.2f — "
+                "objective is noisy across calibration steps; consider increasing "
+                "sure_wavelet_cal_steps (current=%d) for more reliable selection.",
+                cv, float(sure_wavelet_bo_cv_warn), cal_steps,
+            )
+        else:
+            _sure_logger.info(
+                "SURE-Wavelet Auto: winner CV=%.3f — calibration stable.",
+                cv,
+            )
+
+    # ── Phase 4: main sampling from original x with winning config ───────────
+    return sample_sure_wavelet(
+        model, x, sigmas,
+        extra_args=extra_args, callback=callback, disable=disable,
+        sure_alpha=sure_alpha, sure_n_mc=sure_n_mc, sure_eps=sure_eps,
+        sure_jac_interval=sure_jac_interval,
+        sure_adam_mode=sure_adam_mode, sure_adam_beta1=sure_adam_beta1,
+        sure_adam_beta2=sure_adam_beta2, sure_adam_wd=sure_adam_wd,
+        sure_wavelet=best_wavelet, sure_wavelet_level=best_level,
+        sure_wavelet_lp_frac=best_lp_frac,
+        sure_approx_coeff=sure_approx_coeff, sure_csv_path=sure_csv_path,
+        sure_sigma_ema=sure_sigma_ema,
+        sure_wavelet_warmup_steps=sure_wavelet_warmup_steps,
+        sure_grad_mode=sure_grad_mode,
+    )
 
 
 def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callback=None, disable=None,
