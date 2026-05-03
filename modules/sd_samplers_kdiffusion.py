@@ -38,6 +38,7 @@ samplers_k_diffusion = [
     ('DC-Solver', 'sample_dc_solver', ['k_dc_solver'], {'scheduler': 'karras'}),
     ('SURE', 'sample_sure', ['k_sure'], {'scheduler': 'karras'}),
     ('SURE Wavelet', 'sample_sure_wavelet', ['k_sure_wavelet'], {'scheduler': 'karras'}),
+    ('SURE Wavelet Auto', 'sample_sure_wavelet_auto', ['k_sure_wavelet_auto'], {'scheduler': 'karras'}),
     ('SURE Adaptive', 'sample_sure_adaptive', ['k_sure_adaptive'], {}),
     ('DPM++ 2M SURE', 'sample_dpmpp_2m_sure', ['k_dpmpp_2m_sure'], {'scheduler': 'karras'}),
     ('DPM++ 2M SDE SURE', 'sample_dpmpp_2m_sde_sure', ['k_dpmpp_2m_sde_sure'], {'scheduler': 'exponential', 'brownian_noise': True}),
