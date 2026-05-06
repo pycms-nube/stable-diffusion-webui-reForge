@@ -17,7 +17,9 @@ function toggleCss(key, css, enable) {
 
 function setupExtraNetworksForTab(tabname) {
     function registerPrompt(tabname, id) {
-        var textarea = gradioApp().querySelector("#" + id + " > label > textarea");
+        var textarea = gradioApp().querySelector("#" + id + " textarea");
+
+        if (!textarea) return;
 
         if (!activePromptTextarea[tabname]) {
             activePromptTextarea[tabname] = textarea;
@@ -28,13 +30,16 @@ function setupExtraNetworksForTab(tabname) {
         });
     }
 
-    var tabnav = gradioApp().querySelector('#' + tabname + '_extra_tabs > div.tab-nav');
+    var tabnav = gradioApp().querySelector('#' + tabname + '_extra_tabs .tab-nav') ||
+                 gradioApp().querySelector('#' + tabname + '_extra_tabs [role="tablist"]');
     var controlsDiv = document.createElement('DIV');
     controlsDiv.classList.add('extra-networks-controls-div');
-    tabnav.appendChild(controlsDiv);
-    tabnav.insertBefore(controlsDiv, null);
+    if (tabnav) {
+        tabnav.appendChild(controlsDiv);
+    }
 
     var this_tab = gradioApp().querySelector('#' + tabname + '_extra_tabs');
+    if (!this_tab) return;
     this_tab.querySelectorAll(":scope > [id^='" + tabname + "_']").forEach(function(elem) {
         var tabname_full = elem.id;
         var search = gradioApp().querySelector("#" + tabname_full + "_extra_search");
@@ -246,17 +251,18 @@ function updatePromptArea(text, textArea, isNeg) {
 
 function cardClicked(tabname, textToAdd, textToAddNegative, allowNegativePrompt) {
     if (textToAddNegative.length > 0) {
-        updatePromptArea(textToAdd, gradioApp().querySelector("#" + tabname + "_prompt > label > textarea"));
-        updatePromptArea(textToAddNegative, gradioApp().querySelector("#" + tabname + "_neg_prompt > label > textarea"), true);
+        updatePromptArea(textToAdd, gradioApp().querySelector("#" + tabname + "_prompt textarea"));
+        updatePromptArea(textToAddNegative, gradioApp().querySelector("#" + tabname + "_neg_prompt textarea"), true);
     } else {
-        var textarea = allowNegativePrompt ? activePromptTextarea[tabname] : gradioApp().querySelector("#" + tabname + "_prompt > label > textarea");
+        var textarea = allowNegativePrompt ? activePromptTextarea[tabname] : gradioApp().querySelector("#" + tabname + "_prompt textarea");
         updatePromptArea(textToAdd, textarea);
     }
 }
 
 function saveCardPreview(event, tabname, filename) {
-    var textarea = gradioApp().querySelector("#" + tabname + '_preview_filename  > label > textarea');
-    var button = gradioApp().getElementById(tabname + '_save_preview');
+    var textarea = gradioApp().querySelector("#" + tabname + '_preview_filename textarea');
+    var button = gradioApp().getElementById(tabname + '_save_preview') || gradioApp().querySelector('#' + tabname + '_save_preview');
+    if (!textarea || !button) return;
 
     textarea.value = filename;
     updateInput(textarea);
@@ -617,7 +623,7 @@ function scheduleAfterScriptsCallbacks() {
 onUiLoaded(function() {
     var mutationObserver = new MutationObserver(function(m) {
         let existingSearchfields = gradioApp().querySelectorAll("[id$='_extra_search']").length;
-        let neededSearchfields = gradioApp().querySelectorAll("[id$='_extra_tabs'] > .tab-nav > button").length - 2;
+        let neededSearchfields = Math.max(0, gradioApp().querySelectorAll("[id$='_extra_tabs'] .tab-nav button").length - 2);
 
         if (!executedAfterScripts && existingSearchfields >= neededSearchfields) {
             mutationObserver.disconnect();

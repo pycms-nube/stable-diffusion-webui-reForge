@@ -10,9 +10,8 @@ from modules import timer
 from modules import initialize_util
 from modules import initialize
 from threading import Thread
+from modules_forge.initialization import initialize_forge  # must run before any gradio import
 from modules.api.api import Api
-from modules.api.api import Api
-from modules_forge.initialization import initialize_forge
 from modules_forge import main_thread
 
 
@@ -103,6 +102,7 @@ def webui_worker() -> None:
     launch_api = cmd_opts.api
 
     from modules import shared, ui_tempdir, script_callbacks, ui, progress, ui_extra_networks
+    from modules.paths import script_path as _script_path
 
     warning_if_invalid_install_dir()
 
@@ -141,7 +141,7 @@ def webui_worker() -> None:
             auth=gradio_auth_creds,
             inbrowser=auto_launch_browser,
             prevent_thread_lock=True,
-            allowed_paths=cmd_opts.gradio_allowed_path,
+            allowed_paths=cmd_opts.gradio_allowed_path + [_script_path],
             app_kwargs={
                 "docs_url": "/docs",
                 "redoc_url": "/redoc",

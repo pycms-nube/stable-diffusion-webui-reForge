@@ -1,3 +1,14 @@
+# --- gradio_compat shim: must run before any 'import gradio' ---
+import sys as _sys, os as _os
+_compat_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _compat_root not in _sys.path:
+    _sys.path.insert(0, _compat_root)
+import gradio_compat as _gc
+_sys.modules['gradio'] = _gc
+for _sub in _gc._SUBMODULE_NAMES:
+    _sys.modules[f'gradio.{_sub}'] = _gc._submodule(_sub)
+del _gc, _sub, _sys, _os, _compat_root
+# --- end gradio_compat shim ---
 import os
 import sys
 

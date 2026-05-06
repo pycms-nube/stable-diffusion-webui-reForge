@@ -1,8 +1,10 @@
-# Stable Diffusion WebUI Forge/reForge
+# Stable Diffusion WebUI reForge-exp
 
-Stable Diffusion WebUI Forge/reForge is a platform on top of [Stable Diffusion WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui) (based on [Gradio](https://www.gradio.app/)) to make development easier, optimize resource management, speed up inference, and study experimental features.
+Stable Diffusion WebUI reForge-exp is a platform on top of [Stable Diffusion WebUI reForge](https://github.com/Panchovix/stable-diffusion-webui-reForge) (based on [Gradio](https://www.gradio.app/)) to make development easier, optimize resource management, speed up inference, and study experimental features.
 
-The name "Forge" is inspired from "Minecraft Forge". This project is aimed at becoming SD WebUI's Forge.
+reForge-exp continues reForge efforts of providing cutting edge samplers. And transit forge onto newer techonogly.
+
+The name "reForge-exp" was inspired by exponation rules in intergral and derative. It's always there, hinting the nature of this project conitnuing reForge effrots.
 
 # Suggested repos instead of reForge for stability
 
@@ -13,16 +15,33 @@ It is a continuation of Forge2 (so Flux, fp8, gguf, etc) but with more features 
 
 Thanks!
 
-# Forge2/reForge2
+# Features
+New sampler:
+SURE samplers (Tojactory Optimzation samplers)
 
-* newmain_newforge: Based on latest forge2 (gradio4, flux, etc) with some small changes that I plan to add very slowly. For now it has python 3.12 support, sage/flash attention support, all the samplers and schedulers from reForge (1), and recently, support for CFG++ samplers.
+Backend:
+Compatibilty layer of Diffuser piplines (Currently handle model loading and parts of sampling and schecduler. Improve performance)
+Proper model compile with A/B switching offload support (Fix issiue of LoRA is not working even though compile is made)
+Presist model compile cache (fix for Linux, some linux /tmp dictory will be void on reboot)
+Updated PyTorch support
 
-# Other branches:
-* main: Main branch with multiple changes and updates. But not stable as main-old branch.
-* dev: Similar to main but with more unstable changes. I.e. using comfy/ldm_patched backend for sd1.x and sdxl instead of A1111.
-* dev2: More unstable than dev, for now same as dev.
-* experimental: same as dev2 but with gradio 4.
-* main-old: Branch with old forge backend. Possibly the most stable and older one (2025-03)
+# Future work
+Code inspection:
+More coverage of pyTest (it's a known problem, the A111 tests are cosair test)
+
+Backend
+Sampling pipline to diffuser (will keep current samplers)
+FLUX/Qwen/etc support (handel by Diffuser)
+
+Gradio
+Compability layer of Gradio 3.X extention to Gradio 4+ (may use libcst for actual rewrite or expose new class as adapter)
+Update to Gradio 4+
+
+
+# AI Usage
+Claude was used in explorating the Forge codebase and write coresponding patch to hijack them into new piplines.
+I will check them before push to branch. Quailty of code will be inspect once I know function is working with 90% confidence. 
+It's adviced that user knows how to rewind to recent working commit.
 
 # Installing Forge/reForge
 

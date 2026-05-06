@@ -19,9 +19,13 @@ function settingsShowOneTab() {
 
 onUiLoaded(function() {
     var edit = gradioApp().querySelector('#settings_search');
-    var editTextarea = gradioApp().querySelector('#settings_search > label > input');
-    var buttonShowAllPages = gradioApp().getElementById('settings_show_all_pages');
+    var editTextarea = gradioApp().querySelector('#settings_search input') ||
+                       gradioApp().querySelector('#settings_search textarea');
+    var buttonShowAllPages = gradioApp().getElementById('settings_show_all_pages') ||
+                             gradioApp().querySelector('#settings_show_all_pages');
     var settings_tabs = gradioApp().querySelector('#settings div');
+
+    if (!editTextarea || !settings_tabs) return;
 
     onEdit('settingsSearch', editTextarea, 250, function() {
         var searchText = (editTextarea.value || "").trim().toLowerCase();
@@ -38,11 +42,11 @@ onUiLoaded(function() {
         }
     });
 
-    settings_tabs.insertBefore(edit, settings_tabs.firstChild);
-    settings_tabs.appendChild(buttonShowAllPages);
-
-
-    buttonShowAllPages.addEventListener("click", settingsShowAllTabs);
+    if (edit) settings_tabs.insertBefore(edit, settings_tabs.firstChild);
+    if (buttonShowAllPages) {
+        settings_tabs.appendChild(buttonShowAllPages);
+        buttonShowAllPages.addEventListener("click", settingsShowAllTabs);
+    }
 });
 
 

@@ -41,7 +41,7 @@ function setupAccordion(accordion) {
     visibleCheckbox.type = 'checkbox';
     visibleCheckbox.checked = isOpen();
     visibleCheckbox.id = accordion.id + "-visible-checkbox";
-    visibleCheckbox.className = gradioCheckbox.className + " input-accordion-checkbox";
+    visibleCheckbox.className = (gradioCheckbox ? gradioCheckbox.className + " " : "") + "input-accordion-checkbox";
     span.insertBefore(visibleCheckbox, span.firstChild);
 
     accordion.visibleCheckbox = visibleCheckbox;
@@ -50,8 +50,10 @@ function setupAccordion(accordion) {
             labelWrap.click();
         }
 
-        gradioCheckbox.checked = visibleCheckbox.checked;
-        updateInput(gradioCheckbox);
+        if (gradioCheckbox) {
+            gradioCheckbox.checked = visibleCheckbox.checked;
+            updateInput(gradioCheckbox);
+        }
     };
 
     visibleCheckbox.addEventListener('click', function(event) {

@@ -5,8 +5,19 @@ from modules import localization, shared, scripts, util
 from modules.paths import script_path, data_path
 
 
+def _file_url_prefix():
+    try:
+        from gradio.route_utils import API_PREFIX
+        return API_PREFIX.lstrip('/') + '/file='
+    except ImportError:
+        return 'file='
+
+
+_FILE_URL_PREFIX = _file_url_prefix()
+
+
 def webpath(fn):
-    return f'file={util.truncate_path(fn)}?{os.path.getmtime(fn)}'
+    return f'{_FILE_URL_PREFIX}{util.truncate_path(fn)}?{os.path.getmtime(fn)}'
 
 
 def javascript_html():

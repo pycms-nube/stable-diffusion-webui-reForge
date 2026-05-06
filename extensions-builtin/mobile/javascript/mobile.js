@@ -19,11 +19,14 @@ function reportWindowSize() {
     isSetupForMobile = currentlyMobile;
 
     for (var tab of ["txt2img", "img2img"]) {
-        var button = gradioApp().getElementById(tab + '_generate_box');
-        var target = gradioApp().getElementById(currentlyMobile ? tab + '_results' : tab + '_actions_column');
+        var button = gradioApp().getElementById(tab + '_generate_box') || gradioApp().querySelector('#' + tab + '_generate_box');
+        var target = gradioApp().getElementById(currentlyMobile ? tab + '_results' : tab + '_actions_column') ||
+                     gradioApp().querySelector('#' + (currentlyMobile ? tab + '_results' : tab + '_actions_column'));
+        if (!button || !target) continue;
         target.insertBefore(button, target.firstElementChild);
 
-        gradioApp().getElementById(tab + '_results').classList.toggle('mobile', currentlyMobile);
+        var resultsElem = gradioApp().getElementById(tab + '_results') || gradioApp().querySelector('#' + tab + '_results');
+        if (resultsElem) resultsElem.classList.toggle('mobile', currentlyMobile);
     }
 }
 
