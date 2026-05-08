@@ -8,10 +8,18 @@ function set_theme(theme) {
 }
 
 function all_gallery_buttons() {
-    var allGalleryButtons = gradioApp().querySelectorAll('[style="display: block;"].tabitem div[id$=_gallery].gradio-gallery .thumbnails > .thumbnail-item.thumbnail-small');
+    // Gradio 3: active tabitem has inline style="display: block;"
+    // Gradio 6: active tabitem lacks the `hidden` attribute / aria-hidden
+    // .gradio-gallery class was removed in Gradio 4+; select gallery divs by id suffix only.
+    var allGalleryButtons = gradioApp().querySelectorAll('.tabitem div[id$=_gallery] .thumbnails > .thumbnail-item.thumbnail-small');
     var visibleGalleryButtons = [];
     allGalleryButtons.forEach(function(elem) {
-        if (elem.parentElement.offsetParent) {
+        var tabitem = elem.closest('.tabitem');
+        if (!tabitem) return;
+        var hidden = tabitem.style.display === 'none' ||
+                     tabitem.hasAttribute('hidden') ||
+                     tabitem.getAttribute('aria-hidden') === 'true';
+        if (!hidden && elem.parentElement.offsetParent) {
             visibleGalleryButtons.push(elem);
         }
     });
