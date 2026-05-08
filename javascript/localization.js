@@ -175,10 +175,28 @@ document.addEventListener("DOMContentLoaded", function() {
         return;
     }
 
+    // Debounced set so large Gradio 6 Svelte batches don't trigger O(n²) TreeWalker runs.
+    var pendingLocNodes = new Set();
+    var locTimer = null;
+
+    function flushPendingLocNodes() {
+        pendingLocNodes.forEach(function(node) { processNode(node); });
+        pendingLocNodes.clear();
+    }
+
     onUiUpdate(function(m) {
         m.forEach(function(mutation) {
             mutation.addedNodes.forEach(function(node) {
-                processNode(node);
+                if (node.nodeType !== 1) return; // text nodes handled by processNode itself
+                // Small leaf nodes: process immediately (cheap).
+                if (node.childElementCount <= 5) {
+                    processNode(node);
+                } else {
+                    // Large container: defer so many rapid flushes don't stack up.
+                    pendingLocNodes.add(node);
+                    clearTimeout(locTimer);
+                    locTimer = setTimeout(flushPendingLocNodes, 200);
+                }
             });
         });
     });

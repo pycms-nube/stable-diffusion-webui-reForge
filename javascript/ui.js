@@ -302,16 +302,41 @@ function confirm_clear_prompt(prompt, negative_prompt) {
 
 
 var opts = {};
-onAfterUiUpdate(function() {
-    if (Object.keys(opts).length != 0) return;
 
-    var json_elem = gradioApp().getElementById('settings_json');
-    if (json_elem == null) return;
+/**
+ * Try to populate opts from window.gradio_config (Gradio 6 path).
+ * In Gradio 6, settings_json lives in a lazy-rendered tab and is never in the
+ * DOM until the user opens the Settings tab, but its initial value IS present
+ * in the config object injected into the page HTML.
+ * Returns true if opts was populated.
+ */
+function tryInitOptsFromConfig() {
+    if (Object.keys(opts).length !== 0) return true;
+    var comp = (window.gradio_config?.components || []).find(
+        function(c) { return c.props && c.props.elem_id === 'settings_json'; }
+    );
+    if (!comp || !comp.props.value) return false;
+    opts = typeof comp.props.value === 'string'
+        ? JSON.parse(comp.props.value)
+        : comp.props.value;
+    executeCallbacks(optionsAvailableCallbacks); /*global optionsAvailableCallbacks*/
+    executeCallbacks(optionsChangedCallbacks); /*global optionsChangedCallbacks*/
+    return true;
+}
 
-    var textarea = json_elem.querySelector('textarea');
-    var jsdata = textarea.value;
-    opts = JSON.parse(jsdata);
+// Bootstrap opts as early as possible so uiLoadedCallbacks that call
+// onOptionsAvailable() get immediate execution rather than deferral.
+onUiLoaded(function() {
+    tryInitOptsFromConfig();
+});
 
+/**
+ * Populate opts from the settings_json textarea value.
+ * Installs a property interceptor so future server-pushed value changes
+ * propagate to opts automatically.
+ */
+function initOptsFromTextarea(textarea) {
+    opts = JSON.parse(textarea.value);
     executeCallbacks(optionsAvailableCallbacks); /*global optionsAvailableCallbacks*/
     executeCallbacks(optionsChangedCallbacks); /*global optionsChangedCallbacks*/
 
@@ -320,11 +345,9 @@ onAfterUiUpdate(function() {
             var valueProp = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
             var oldValue = valueProp.get.call(textarea);
             valueProp.set.call(textarea, newValue);
-
             if (oldValue != newValue) {
                 opts = JSON.parse(textarea.value);
             }
-
             executeCallbacks(optionsChangedCallbacks);
         },
         get: function() {
@@ -332,8 +355,24 @@ onAfterUiUpdate(function() {
             return valueProp.get.call(textarea);
         }
     });
+}
 
-    json_elem.parentElement.style.display = "none";
+onAfterUiUpdate(function() {
+    if (Object.keys(opts).length != 0) return;
+
+    var json_elem = gradioApp().getElementById('settings_json');
+    if (json_elem != null) {
+        var textarea = json_elem.querySelector('textarea');
+        if (textarea && textarea.value) {
+            initOptsFromTextarea(textarea);
+            json_elem.parentElement.style.display = "none";
+        }
+        return;
+    }
+
+    // Gradio 6: settings_json is in a lazy-rendered tab. Fall back to the
+    // value baked into gradio_config on initial page load.
+    tryInitOptsFromConfig();
 });
 
 onOptionsChanged(function() {

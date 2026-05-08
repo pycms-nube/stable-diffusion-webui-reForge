@@ -320,7 +320,7 @@ class UiSettings:
                 component = create_setting_component(k, is_quicksettings=True)
                 self.component_dict[k] = component
 
-    def add_functionality(self, demo):
+    def add_functionality(self, demo, settings_tab=None):
         self.submit.click(
             fn=wrap_gradio_call_no_job(lambda *args: self.run_settings(*args), extra_outputs=[gr.update()]),
             inputs=self.components,
@@ -359,12 +359,21 @@ class UiSettings:
         def get_settings_values():
             return [get_value_for_setting(key) for key in component_keys]
 
-        demo.load(
-            fn=get_settings_values,
-            inputs=[],
-            outputs=[self.component_dict[k] for k in component_keys],
-            queue=False,
-        )
+        # Defer to tab-select so the 653-output update cascade doesn't run on every page load.
+        if settings_tab is not None:
+            settings_tab.select(
+                fn=get_settings_values,
+                inputs=[],
+                outputs=[self.component_dict[k] for k in component_keys],
+                queue=False,
+            )
+        else:
+            demo.load(
+                fn=get_settings_values,
+                inputs=[],
+                outputs=[self.component_dict[k] for k in component_keys],
+                queue=False,
+            )
 
     def search(self, text):
         print(text)

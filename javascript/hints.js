@@ -151,6 +151,10 @@ let tooltipCheckTimer = null;
 
 function processTooltipCheckNodes() {
     for (const node of tooltipCheckNodes) {
+        // Large containers deferred from onUiUpdate — walk their descendants now.
+        if (node.childElementCount > 10) {
+            node.querySelectorAll('span, button, p').forEach(n => updateTooltip(n));
+        }
         updateTooltip(node);
     }
     tooltipCheckNodes.clear();
@@ -181,7 +185,17 @@ onUiUpdate(function(mutationRecords) {
                         tooltipCheckNodes.add(node);
                     }
                 }
-                node.querySelectorAll('span, button, p').forEach(n => tooltipCheckNodes.add(n));
+                // Guard: skip deep subtree scan in the hot MutationObserver path.
+                // Gradio 6 Svelte can add hundreds of nodes in a single mutation;
+                // running querySelectorAll on each would block the main thread.
+                // Large containers are deferred to processTooltipCheckNodes via a
+                // lightweight container reference instead.
+                if (node.childElementCount <= 10) {
+                    node.querySelectorAll('span, button, p').forEach(n => tooltipCheckNodes.add(n));
+                } else {
+                    // Queue the container — processTooltipCheckNodes will walk it.
+                    tooltipCheckNodes.add(node);
+                }
             }
         }
     }

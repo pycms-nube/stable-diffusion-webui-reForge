@@ -19,9 +19,22 @@ function get_uiCurrentTab() {
 
 /**
  * Get the first currently visible top-level UI tab content (e.g. the div hosting the "txt2img" UI).
+ * Gradio 3 hides inactive tabs with inline style="display:none".
+ * Gradio 6 may use the `hidden` attribute or aria-hidden instead — check both.
  */
 function get_uiCurrentTabContent() {
-    return gradioApp().querySelector('#tabs > .tabitem[id^=tab_]:not([style*="display: none"])');
+    // Primary: Gradio 3 style — inline display:none on inactive tabs
+    const byStyle = gradioApp().querySelector('#tabs > .tabitem[id^=tab_]:not([style*="display: none"])');
+    if (byStyle) return byStyle;
+
+    // Fallback: Gradio 6 — find first tabitem without the `hidden` attribute
+    const allTabItems = gradioApp().querySelectorAll('#tabs > .tabitem[id^=tab_]');
+    for (const el of allTabItems) {
+        if (!el.hasAttribute('hidden') && el.getAttribute('aria-hidden') !== 'true') {
+            return el;
+        }
+    }
+    return null;
 }
 
 var uiUpdateCallbacks = [];
@@ -147,18 +160,23 @@ document.addEventListener('keydown', function(e) {
     const isAltKey = e.altKey;
     const isEsc = e.key === 'Escape';
 
-    const generateButton = get_uiCurrentTabContent().querySelector('button[id$=_generate]');
-    const interruptButton = get_uiCurrentTabContent().querySelector('button[id$=_interrupt]');
-    const skipButton = get_uiCurrentTabContent().querySelector('button[id$=_skip]');
+    // get_uiCurrentTabContent() may return null in Gradio 6 if the tab
+    // selector doesn't match yet — guard every access to prevent uncaught TypeError.
+    const tabContent = get_uiCurrentTabContent();
+    if (!tabContent) return;
+
+    const generateButton = tabContent.querySelector('button[id$=_generate]');
+    const interruptButton = tabContent.querySelector('button[id$=_interrupt]');
+    const skipButton = tabContent.querySelector('button[id$=_skip]');
 
     if (isCtrlKey && isEnter) {
-        if (interruptButton.style.display === 'block') {
+        if (interruptButton && interruptButton.style.display === 'block') {
             interruptButton.click();
             const callback = (mutationList) => {
                 for (const mutation of mutationList) {
                     if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
                         if (interruptButton.style.display === 'none') {
-                            generateButton.click();
+                            generateButton?.click();
                             observer.disconnect();
                         }
                     }
@@ -167,13 +185,13 @@ document.addEventListener('keydown', function(e) {
             const observer = new MutationObserver(callback);
             observer.observe(interruptButton, {attributes: true});
         } else {
-            generateButton.click();
+            generateButton?.click();
         }
         e.preventDefault();
     }
 
     if (isAltKey && isEnter) {
-        skipButton.click();
+        skipButton?.click();
         e.preventDefault();
     }
 
@@ -182,7 +200,7 @@ document.addEventListener('keydown', function(e) {
         const lightboxModal = document.querySelector('#lightboxModal');
         if (!globalPopup || globalPopup.style.display === 'none') {
             if (document.activeElement === lightboxModal) return;
-            if (interruptButton.style.display === 'block') {
+            if (interruptButton && interruptButton.style.display === 'block') {
                 interruptButton.click();
                 e.preventDefault();
             }

@@ -621,15 +621,29 @@ function scheduleAfterScriptsCallbacks() {
 }
 
 onUiLoaded(function() {
-    var mutationObserver = new MutationObserver(function(m) {
+    // Debounce timer so we don't run two whole-DOM querySelectorAll calls on
+    // every Gradio 6 Svelte reactive flush during initial page load.
+    var checkTimer = null;
+
+    function checkSearchfields() {
         let existingSearchfields = gradioApp().querySelectorAll("[id$='_extra_search']").length;
-        let neededSearchfields = Math.max(0, gradioApp().querySelectorAll("[id$='_extra_tabs'] .tab-nav button").length - 2);
+        // Gradio 6 uses role="tab" buttons; also support old .tab-nav class.
+        let tabButtons = gradioApp().querySelectorAll(
+            "[id$='_extra_tabs'] [role='tablist'] button, [id$='_extra_tabs'] .tab-nav button"
+        ).length;
+        let neededSearchfields = Math.max(0, tabButtons - 2);
 
         if (!executedAfterScripts && existingSearchfields >= neededSearchfields) {
             mutationObserver.disconnect();
             executedAfterScripts = true;
             scheduleAfterScriptsCallbacks();
         }
+    }
+
+    var mutationObserver = new MutationObserver(function(m) {
+        // Debounce: coalesce rapid Svelte flushes into a single check.
+        clearTimeout(checkTimer);
+        checkTimer = setTimeout(checkSearchfields, 100);
     });
     mutationObserver.observe(gradioApp(), {childList: true, subtree: true});
 });

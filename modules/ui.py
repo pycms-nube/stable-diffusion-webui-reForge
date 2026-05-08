@@ -1153,11 +1153,15 @@ def create_ui() -> gr.Blocks:
             tab_order: dict[str | float, int] = {k: i for i, k in enumerate(shared.opts.ui_tab_order)}
             sorted_interfaces: list[tuple[Blocks | None, str, str] | tuple[Blocks, str, str]] = sorted(interfaces, key=lambda x: tab_order.get(x[1], 9999))
 
+            settings_tab_item = None
             for interface, label, ifid in sorted_interfaces:
                 if label in shared.opts.hidden_tabs:
                     continue
-                with gr.TabItem(label, id=ifid, elem_id=f"tab_{ifid}"):
+                with gr.TabItem(label, id=ifid, elem_id=f"tab_{ifid}") as tab_item:
                     interface.render()
+
+                if ifid == "settings":
+                    settings_tab_item = tab_item
 
                 if ifid not in ["extensions", "settings"]:
                     loadsave.add_block(interface, ifid)
@@ -1173,7 +1177,7 @@ def create_ui() -> gr.Blocks:
         footer: str = footer.format(versions=versions_html(), api_docs="/docs" if shared.cmd_opts.api else "https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/API")
         gr.HTML(footer, elem_id="footer")
 
-        settings.add_functionality(demo)
+        settings.add_functionality(demo, settings_tab_item)
 
         update_image_cfg_scale_visibility: Callable[[], dict] = lambda: gr.update(visible=shared.sd_model and shared.sd_model.cond_stage_key == "edit")
         settings.text_settings.change(fn=update_image_cfg_scale_visibility, inputs=[], outputs=[image_cfg_scale])
