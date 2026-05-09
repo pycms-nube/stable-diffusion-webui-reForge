@@ -2,10 +2,18 @@
   "name": "stable-diffusion-webui",
   "version": "0.0.0",
   "devDependencies": {
-    "eslint": "^8.40.0"
+    "eslint": "^8.40.0",
+    "puppeteer": "^24.43.0"
   },
   "scripts": {
     "lint": "eslint .",
-    "fix": "eslint --fix ."
+    "fix": "eslint --fix .",
+    "test:browser": "node test/browser/user_journey.mjs",
+    "test:browser:pc": "node test/browser/user_journey.mjs --profile=pc",
+    "test:browser:laptop": "node test/browser/user_journey.mjs --profile=laptop",
+    "test:browser:ipad": "node test/browser/user_journey.mjs --profile=ipad",
+    "test:browser:iphone": "node test/browser/user_journey.mjs --profile=iphone",
+    "test:browser:visible": "node test/browser/user_journey.mjs --no-headless",
+    "test:browser:generate": "node test/browser/user_journey.mjs --generate"
   }
 }

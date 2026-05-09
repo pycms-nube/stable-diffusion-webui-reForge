@@ -12,9 +12,11 @@ function gradioApp() {
 
 /**
  * Get the currently selected top-level UI tab button (e.g. the button that says "Extras").
+ * Supports both Gradio 3 (.selected class) and Gradio 6 (aria-selected attribute).
  */
 function get_uiCurrentTab() {
-    return gradioApp().querySelector('#tabs > .tab-nav > button.selected');
+    return gradioApp().querySelector('#tabs > .tab-nav > button.selected') ||
+           gradioApp().querySelector('#tabs button[aria-selected="true"]');
 }
 
 /**

@@ -86,8 +86,8 @@
                 // By default the InputAccordion checkbox is linked with the state
                 // of accordion's open/close state. To disable this link, we can
                 // simulate click to check the checkbox and uncheck it.
-                this.enabledAccordionCheckbox.click();
-                this.enabledAccordionCheckbox.click();
+                this.enabledAccordionCheckbox?.click();
+                this.enabledAccordionCheckbox?.click();
 
                 this.sync_enabled_checkbox();
                 this.attachEnabledButtonListener();
@@ -398,8 +398,14 @@
 
         gradioApp().querySelectorAll('#controlnet').forEach(accordion => {
             if (cnetAllAccordions.has(accordion)) return;
-            const tabs = [...accordion.querySelectorAll('.input-accordion')]
-                .map(tab => new ControlNetUnitTab(tab, accordion));
+            const inputAccordions = [...accordion.querySelectorAll('.input-accordion')];
+            if (!inputAccordions.length) return;
+            // Wait until all required child elements are rendered before initializing.
+            // Without this guard, partial Gradio rendering triggers constructor throws
+            // on every subsequent mutation until the DOM is complete (cascade = 900+ errors).
+            if (!inputAccordions.every(tab => tab.querySelector('.cnet-mask-upload'))) return;
+            cnetAllAccordions.add(accordion);
+            const tabs = inputAccordions.map(tab => new ControlNetUnitTab(tab, accordion));
 
             // On open of main extension accordion, if no unit is enabled,
             // open unit 0 for edit.
@@ -415,8 +421,6 @@
                 }
             });
             observerAccordionOpen.observe(labelWrap, { attributes: true, attributeFilter: ['class'] });
-
-            cnetAllAccordions.add(accordion);
         });
     });
 })();

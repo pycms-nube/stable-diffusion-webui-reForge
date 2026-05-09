@@ -10,9 +10,9 @@ function imageMaskResize() {
     }
 
     const wrapper = canvases[0].closest('.touch-none');
-    const previewImage = wrapper.previousElementSibling;
+    const previewImage = wrapper?.previousElementSibling;
 
-    if (!previewImage.complete) {
+    if (!previewImage || !previewImage.complete) {
         previewImage.addEventListener('load', imageMaskResize);
         return;
     }

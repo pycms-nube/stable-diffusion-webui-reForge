@@ -194,7 +194,7 @@
 
 function setupAllResizeHandles() {
     for (var elem of gradioApp().querySelectorAll('.resize-handle-row')) {
-        if (!elem.querySelector('.resize-handle') && !elem.children[0].classList.contains("hidden")) {
+        if (!elem.querySelector('.resize-handle') && elem.children[0] && !elem.children[0].classList.contains("hidden")) {
             setupResizeHandle(elem);
         }
     }
