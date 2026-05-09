@@ -197,18 +197,36 @@ class Journey {
         const before = this.errors.length;
         const start  = Date.now();
         let ok       = true;
+        // Hard ceiling per step — prevents CDP flooding from blocking the runner indefinitely.
+        const cap = Math.min(this.timeout(60_000), 90_000);
+        let timedOut = false;
         try {
-            await fn();
+            await Promise.race([
+                fn(),
+                new Promise((_, reject) =>
+                    setTimeout(() => { timedOut = true; reject(new Error(`step timed out after ${cap}ms`)); }, cap),
+                ),
+            ]);
         } catch (err) {
             ok = false;
             this.errors.push({ step: name, message: `[step throw] ${err.message}` });
+            // Brief pause after timeout so any in-flight CDP calls can drain
+            if (timedOut) await new Promise(r => setTimeout(r, 500));
         }
-        const ms       = Date.now() - start;
+        const ms        = Date.now() - start;
         const newErrors = this.errors.slice(before);
         this.stepResults.push({ name, ok: ok && newErrors.length === 0, ms, errors: newErrors });
-        const status = ok && newErrors.length === 0 ? '✓' : '✗';
+        const status    = ok && newErrors.length === 0 ? '✓' : '✗';
         const errSuffix = newErrors.length ? ` (${newErrors.length} JS errors)` : '';
         console.log(`  ${status} ${name}  (${ms}ms)${errSuffix}`);
+        // Show first unique error inline for immediate diagnosis
+        if (newErrors.length > 0) {
+            console.log(`    ↳ ${newErrors[0].message.slice(0, 180)}`);
+            if (newErrors.length > 1) {
+                const unique = [...new Set(newErrors.map(e => e.message))];
+                if (unique.length > 1) console.log(`    ↳ (+ ${unique.length - 1} distinct message type(s))`);
+            }
+        }
     }
 
     /** Wait for a selector, throw with a clear message if it never appears */
@@ -308,8 +326,10 @@ async function runJourney(browser, profile, opts) {
 
     // ── 1. Initial page load ─────────────────────────────────────────────────
     await j.step('page-load', async () => {
-        await page.goto(opts.url, { waitUntil: 'networkidle0', timeout: j.timeout(60_000) });
-        // Wait for Gradio app to be interactive (txt2img prompt is the indicator)
+        // domcontentloaded is used instead of networkidle0 — Gradio continuously
+        // polls the server in the background so networkidle0 never fires on a live instance.
+        await page.goto(opts.url, { waitUntil: 'domcontentloaded', timeout: j.timeout(30_000) });
+        // Explicit readiness gate: wait for Gradio to render the txt2img prompt textarea.
         await j.waitFor('#txt2img_prompt textarea', j.timeout(45_000));
         await j.screenshot('loaded');
     });
