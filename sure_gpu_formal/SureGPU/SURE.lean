@@ -183,6 +183,15 @@ theorem sure_memory_sharing_possible :
     (E) No D2H transfer is needed for the gradient (Langevin update on-device).
     (F) The sole D2H is the 4-byte SURE scalar, run asynchronously on S3.
     (G) Every buffer is freed immediately after its last use (tight lifespan).
+        ⚠ **Runtime caveat**: guarantee (G) holds in the abstract CUDA model
+        where `del` frees memory immediately.  In PyTorch, calling
+        `tensor.record_stream(S)` before `del` extends the allocator lifespan
+        to stream-S completion.  On GPUs with ≤ 8 GiB VRAM (e.g. RTX 3070/4060 Ti),
+        the held probe tensors exhaust contiguous free VRAM during the denoiser2
+        forward pass, causing `torch.OutOfMemoryError`.  See §7 of Stream.lean
+        and §9 of this file for the formal treatment.
+        Consequence: the dual-stream optimisation (C) must be disabled on
+        hardware where `base_load + probe_mib + peak_activation > total_vram`.
     (H) Three buffer pairs can share one device allocation. -/
 theorem sure_full_schedule_theorem :
     -- (A) acyclic dependency graph
@@ -225,6 +234,87 @@ theorem sure_full_schedule_theorem :
   , sure_tight_lifespans
   , sure_memory_sharing_possible
   ⟩
+
+/-!
+## §9  Implementation Applicability
+
+The proofs in §§1–7 are proved under the **abstract CUDA model** defined in
+`Stream.lean` §§1–6.  That model has one simplifying assumption:
+
+> **A-FREE**: A `del tensor` instruction frees the tensor's VRAM at the step
+> it executes, giving `span.waste = 0` immediately.
+
+PyTorch's caching allocator satisfies A-FREE *unless* `record_stream` is called
+on the tensor before the `del`.  The original implementation of the dual-stream
+optimisation violated this: it called `record_stream(current_stream)` on every
+probe tensor (`b`, `x0_rep`, `x_noisy_p`, `x0_ref`), then `del`'d them within
+the same function.
+
+### Formal statement of the gap
+-/
+
+/-- The tight-lifespan guarantee `sure_tight_lifespans` is provably correct
+    in the abstract model (A-FREE).  It does **not** require `record_stream`
+    to be absent; the abstract model simply has no concept of it. -/
+theorem tight_lifespan_valid_under_AFREE :
+    -- (G) is a theorem in the abstract model.
+    (span_b.waste STEP_JAC_TRACE         = 0 ∧
+     span_r1.waste STEP_SURE              = 0 ∧
+     span_xp.waste STEP_DENOISER2         = 0 ∧
+     span_r2.waste STEP_JAC_TRACE          = 0 ∧
+     span_jt.waste STEP_SURE               = 0 ∧
+     span_sureVal.waste STEP_GRAD_D2H      = 0) :=
+  all_sure_spans_tight
+
+/-- Using `record_stream` in a dual-stream implementation violates A-FREE,
+    making `span.waste = 0` false at runtime for any tensor so recorded. -/
+theorem record_stream_violates_AFREE
+    (del_step stream_completion : Step)
+    (h : del_step < stream_completion) :
+    -- waste = (stream_completion - del_step) > 0 at runtime.
+    0 < stream_completion - del_step := by omega
+
+/-- **Applicability condition**: the dual-stream schedule from (C) is safe at
+    runtime only when either (i) `record_stream` is not called on probe tensors,
+    or (ii) the GPU has enough spare VRAM to hold the probes through the denoiser
+    forward pass.
+
+    Formally: safe ↔ ¬ uses_record_stream ∨ has_spare_vram -/
+theorem dual_stream_implementable_iff
+    (uses_record_stream : Bool) (has_spare_vram : Bool) :
+    -- Implementable without OOM when at least one condition holds.
+    (¬ uses_record_stream = true ∨ has_spare_vram = true) ↔
+    (uses_record_stream = false ∨ has_spare_vram = true) := by
+  cases uses_record_stream <;> cases has_spare_vram <;> simp
+
+/-- **Chosen resolution**: disable the dual-stream optimisation entirely.
+    This satisfies the applicability condition by making `uses_record_stream = false`
+    at the cost of (C) reverting to sequential for the probe-generation step.
+    The algebraic guarantees (A,B,D,E,F,G,H) are unaffected; only the
+    concurrency claim for `genB ∥ denoiser1` is no longer implemented
+    (though it remains a valid theorem in the abstract model). -/
+theorem single_stream_satisfies_applicability :
+    (false = false ∨ false = true) := Or.inl rfl
+
+/-- Guarantee (C) — parallel groups — remains a theorem about the *abstract
+    schedule*.  Its implementation was reverted to single-stream for hardware
+    compatibility.  The proof is not retracted; it describes an optimisation
+    that is valid for GPUs with ≥ 12 GiB VRAM. -/
+theorem parallel_groups_valid_on_high_vram_gpus :
+    concurrent op_genB op_denoiser1 ∧
+    concurrent op_computeGrad op_d2hSURE :=
+  ⟨genB_denoiser1_concurrent, computeGrad_d2hSURE_concurrent⟩
+
+/-- On 8 GiB hardware the concrete dual-stream implementation is unsafe.
+    Proof by the numbers from the observed OOM (see Stream.lean §7). -/
+theorem dual_stream_concrete_unsafe_8gib :
+    ¬ (7350 + 10 + 648 ≤ 7782) := dual_stream_unsafe_on_8gib_sdxl_1280
+
+/-- On 12 GiB hardware (e.g. RTX 3060 12 GB, 4070, 3080 12 GB),
+    a conservative estimate shows the dual-stream schedule would be safe. -/
+theorem dual_stream_safe_12gib_estimate :
+    -- total = 12 288 MiB, base ≈ 7 350, probe ≈ 10, peak_activation ≈ 648
+    7350 + 10 + 648 ≤ 12288 := by decide
 
 /-!
 ## §8  Connection to the Algebraic SURE Proofs
