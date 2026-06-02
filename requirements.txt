@@ -8,7 +8,7 @@ clean-fid
 diskcache
 einops
 facexlib
-fastapi>=0.90.1
+fastapi>=0.136.3
 gradio==3.41.2
 inflection
 jsonmerge
@@ -26,10 +26,10 @@ requests
 resize-right
 
 safetensors
-scikit-image>=0.19
+scikit-image>=0.26.0
 tomesd
 torch
 torchdiffeq
 torchsde
 transformers==4.44.0
-pillow-avif-plugin==1.4.3
+pillow-avif-plugin==1.5.5
