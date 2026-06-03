@@ -5,7 +5,9 @@ The postfix "Exp" means: Expedition, Exploration. The repo will target more aggr
 
 # Features
 - SURE SGPS Guidance samplers (a trajectory optimization sampler)
-- Apple MLX support (much faster than MPS)
+- Apple MLX support (much faster than MPS and supports BF16)
+- Diffuser pipeline support (now the compile with LoRA is supported)
+- 
 # Notice of usage of AI
 reForge-Exp uses Claude Code as a coding agent; you may see Claude Code co-author some commits.
 Currently, Claude Code is used to clean up the Forge framework design for better maintainability and to prototype new technology. 
@@ -35,7 +37,7 @@ For this, you may need to use a VPN that supports TUN mode, or clone the repo wi
 Please also notice that during installation, Python also needs to install packages to run this repo.
 
 ### (Suggested) Clean install
-If you come from another WebUI, you may preserve the models folder. I highly suggest you manually remove the venv folder( .venv or venv), to avoid conflict in dependency. 
+If you come from another WebUI, you may preserve the models folder. I highly suggest you manually remove the venv folder .venv or venv) to avoid conflicts in dependencies. 
 ## First step, all OS must do this
 Use any git tool, including GitHub Desktop, to clone this repo's code
 If you are using git, here are the commands
@@ -48,56 +50,59 @@ In the future, the WebUI script will be able to do this for you.
 
 ## Windows(7+)
 You will need a working Python 3.11+ release. Python 3.14 is the current target; 3.11–3.13 also work fine. 
-Python can be downloaded from here: 
-Open PowerShell or Command Line Prompt. I recommend using the right-click menu's "Open with Terminal" entry to open it directly in Terminal. If you can't find it, use cd to change directory to repo.
-Now check if you are using NVIDIA GPU. If not, in cmd arg, you add following line.
+Python can be downloaded from here: https://www.python.org/downloads/
+Open PowerShell or Command Line Prompt. I recommend using the right-click menu's "Open with Terminal" entry to open it directly in Terminal. If you can't find it, use cd to change the directory to the repo.
+Now check if you are using an NVIDIA GPU. If not, add the following line to the command line argument.
 ```bash
 --skip-cuda-test
 ```
-For NVIDIA GPU user, you now need to go to following link to know what kind of SM version you have.
-SM Check out:
-After that, go to Following link for cuDDN and CUDA runtime
-CUDA:
-cuDDN:
-Notice that cuDDN require a developer account, you will need to register one, it's free and will grant you access to other libs that may need for other features.
-Reboot your computer after install, these libs need reboot so Windows understand you just installed them.
-Run webui.bat. Script will handle all initalization for you. 
+NVIDIA GPU users, you first need to go to the PyTorch website to see what CUDA version it's using
+PyTorch: https://pytorch.org/get-started/locally/
+After that, go to the following link for cuDDN and CUDA runtime
+CUDA: https://developer.nvidia.com/cuda-downloads
+cuDNN: https://developer.nvidia.com/cudnn-downloads
+If you see that CUDA does not match between these two, you need to go to the following link to find what CUDA and cuDNN version you need to install
+CUDA: https://developer.nvidia.com/cuda-toolkit-archive
+cuDNN: https://developer.nvidia.com/cudnn-archive
+Notice that cuDDN requires a developer account. You will need to register for one; it's free and will grant you access to other libraries that may be needed for other features.
+Reboot your computer after installing; these libraries need a reboot for Windows to recognize the installation.
+Run webui.bat. The script will handle all initialization for you. 
 
 # Linux
 You will need a working Python 3.11+ release. Python 3.14 is the current target; 3.11–3.13 also work fine. The exact installation depends on your distro; search your distro's documentation for this step. 
-Open your distro's terminal and change into repo dictory.
-Now check if you are using NVIDIA GPU. If not, in cmd arg, you add following line.
+Open your distro's terminal and change into the repo directory.
+Now check if you are using an NVIDIA GPU. If not, add the following line to the command line argument.
 ```bash
 --skip-cuda-test
 ```
-Run webui.sh. Script will handle all initalization for you. 
+Run webui.sh. The script will handle all initialization for you. 
 
 ## MacOS(M series chip)
-You will need a working python 3.7+ release. Currently 3.11 is fine. 
-Python can be download from here: 
+You will need a working Python 3.7+ release. Currently, 3.11 is fine. 
+Python can be downloaded from here: 
 Or use brew
 ```bash
 brew install python@3.14
 ```
-Open terminal, change into repo dictory
-Run webui.sh, wait for initalazation, Control+C after it says "WebUI Started". We will kill the server to install MLX.
-Now input command
+Open terminal, change into the repo directory
+Run webui.sh, wait for initialization, Control+C after it says "WebUI Started". We will kill the server to install MLX.
+Now input the command
 ```bash
 source ./venv/bin/activate
 ```
-After hit Enter, you should see your terminal change into
+After hitting Enter, you should see your terminal change into
 ```bash
 (venv) > 
 ```
-Now within the venv, use following command to install MLX 
+Now, within the venv, use the following command to install MLX 
 ```bash
 python -m pip install mlx
 ```
-After install complete, use following command to exist venv
+After the installation is complete, use the following command to exit the venv
 ```bash
 deactivate
 ```
-Now boot the WebUI again, this time you should see a banner says MLX activate.
+Now boot the WebUI again, this time you should see a banner that says MLX activate.
 ## To update this repo
 When you want to update:
 ```bash
@@ -107,7 +112,7 @@ git pull
 
 ### If using Windows 7 and/or CUDA 11.x
 
-For this, way to install is a bit different, since it uses another req file. We will rename the original req file to a backup, and then copy the legacy one renmaed as the original, to keep updates working.
+For this, the installation process is a bit different, since it uses a different req file. We will rename the original req file to a backup and then copy the legacy one renamed as the original to keep updates working.
 For Windows CMD, it would be:
 
 ```bash
@@ -151,8 +156,8 @@ If you got stuck in a merge to resolve conflicts, you can go back with `git merg
 Pre-done or Pre-install package is planned, it will target for Windows user handle CUDA runtime issue. 
 
 # reForge-Exp command line
-reForge-Exp currently use command line args ADD function on top of reForge. If there is nothing in the following is specfic, it bahave like reForge (other than the MLX pipline, that is enable by default to avoid exterme slow MPS ops)
-1. `--forge-diffusers-pipeline` This flag enable reForge-Exp's Diffuser pipline. The orginal Forge is trying to implement Diffuser and other webUI like SD.NEXT is based on Diffuser. This enable wider support of the model like FLUX and proper LoRA support of PyTorch compile (reForge given up to handle it). Performance wise, this also allows mmap loading of the model. Recommend add it after first generation is completed.
+reForge-Exp currently uses the ADD command-line arg function on top of reForge. If there is nothing specific in the following, it behaves like reForge (other than the MLX pipeline, which is enabled by default to avoid extremely slow MPS ops)
+1. `--forge-diffusers-pipeline` This flag enables reForge-Exp's Diffuser pipeline. The original Forge is trying to implement Diffuser and other webUIs like SD.NEXT is based on Diffuser. This enables wider support for the model, like FLUX, and proper LoRA support for PyTorch compile (reForge has given up on handling it). Performance-wise, this also allows mmap loading of the model. Recommend adding it after the first generation is completed.
 2. `--forge-diffusers-offload` When using `--forge-diffusers-pipeline`, move the whole HF UNet back to CPU after each sampling step to save VRAM. Adds one full transfer per step. Most aggressively save VRAM
 3. `--forge-diffusers-sequential-offload` When using --forge-diffusers-pipeline, use accelerate per-block CPU offload: each UNet block moves to GPU just before its forward pass and returns to CPU immediately after (peak VRAM ≈ largest single block). Slower than --forge-diffusers-offload but uses significantly less VRAM. Takes precedence over --forge-diffusers-offload if both are set.
 4. 
@@ -232,9 +237,9 @@ Some extra flags that can help with performance or save VRAM, or more, depending
     --disable-ipex-hijack
     --pytorch-deterministic
 
-# Lora ctl (Control)
+# Lora ctl (Control) from reForge
 
-I've added this repo adapted for reforge.
+I've(@Panchovix) added this repo adapted for reforge.
 
 This wouldn't be possible to do without the original ones!
 
@@ -264,7 +269,7 @@ Since the UI got really cluttered with built it extensions, I have removed some 
 
 # Last "Old" Forge commit (https://github.com/lllyasviel/stable-diffusion-webui-forge/commit/bfee03d8d9415a925616f40ede030fe7a51cbcfd) before forge2.
 
-# Support
+# Support(@Panchovix)
 
 Some people have been asking how to donate or support the project, and I'm really grateful for that! I did this buymeacoffe link from some suggestions!
 
