@@ -7637,3 +7637,17 @@ def sample_sure_restart(
 
     return x
 
+
+def sample_sure_attention(model, x, sigmas, extra_args=None, callback=None, disable=None,
+                           sure_alpha=0.05, sure_n_mc=1, sure_eps=1e-3,
+                           sure_preheat_steps=-1, sure_jac_interval=-1,
+                           sure_adam_mode='none', sure_adam_beta1=0.9,
+                           sure_adam_beta2=0.999, sure_adam_wd=0.01,
+                           sure_grad_mode='approx',
+                           sure_attn_weight=1.0,
+                           sure_attn_blocks='all'):  # noqa: kept for API compat — use SURE Attention Guidance extension instead
+    raise NotImplementedError(
+        "sample_sure_attention has been removed. "
+        "Enable 'SURE Attention Guidance' in the Extensions accordion instead."
+    )
+
