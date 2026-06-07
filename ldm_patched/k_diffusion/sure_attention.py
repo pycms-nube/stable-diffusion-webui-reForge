@@ -61,22 +61,33 @@ def _make_entropy_hook(store: list):
     from ldm_patched.contrib.nodes_sag import attention_basic_with_sim
 
     def hook(q, k, v, extra_options, mask=None):
-        heads = extra_options["n_heads"]
-        attn_precision = extra_options.get("attn_precision")
+        heads     = extra_options["n_heads"]
+        orig_dtype = q.dtype
 
-        out, sim = attention_basic_with_sim(
-            q, k, v, heads=heads, attn_precision=attn_precision, mask=mask
-        )
-        # sim: (B*heads, N_q, N_k) — compute per-query entropy
+        # torch.autocast (fp16/bf16 mode) downcasts fp32 inputs before eligible
+        # ops like einsum/matmul even after an explicit `.float()` call.  At
+        # seq=1600 (SDXL middle block) the fp16 QK dot-products overflow → inf
+        # → one-hot softmax → entropy = 0 every step.  Step outside autocast.
+        device_type = "cuda" if q.is_cuda else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            out_f32, sim = attention_basic_with_sim(
+                q.float(), k.float(), v.float(),
+                heads=heads, attn_precision=torch.float32, mask=mask,
+            )
+
+        # sim: (B*heads, N_q, N_k) in fp32 — compute per-query entropy
         # H[i] = −∑_j A[i,j]·log(A[i,j]+ε)  ∈ [0, log N_k]
-        # Force float32: log(near-zero bf16/fp16) → NaN without this cast
+        # IMPORTANT: parenthesise so negation happens BEFORE clamp.
+        #   Wrong: -(sum).clamp(0) → sum≈-6.7 → clamp→0 → negate→0
+        #   Right: (-sum).clamp(0) → negate→+6.7 → clamp→+6.7
         eps_ent = 1e-8
-        sim_f32 = sim.float()
-        ent = -(sim_f32 * (sim_f32 + eps_ent).log()).sum(-1).clamp(min=0)  # (B*heads, N_q)
+        ent = (-(sim * (sim + eps_ent).log()).sum(-1)).clamp(min=0)  # (B*heads, N_q)
 
         orig_shape = extra_options.get("original_shape")  # [B, C, H_lat, W_lat]
         store.append((ent.detach(), heads, orig_shape))
-        return out
+
+        # Return attention output in the original dtype so the model stays healthy
+        return out_f32.to(orig_dtype)
 
     return hook
 
@@ -202,7 +213,20 @@ def _aggregate_entropy_map(store: list, latent_shape: tuple,
             )
             continue
 
-        ent_spatial = ent_b.float().reshape(b_use, 1, h_l, w_l)
+        # Normalise by theoretical max entropy log(N_k) so U ∈ [0,1] absolutely.
+        # Per-image min-max would collapse when attention is spatially uniform
+        # (e.g. high-noise steps where all tokens attend equally → entropy ≈ log(N)
+        # everywhere, U_max − U_min ≈ 0 → divide by ε → all zeros).
+        log_N = math.log(max(N, 2))
+        ent_spatial = ent_b.float().reshape(b_use, 1, h_l, w_l) / log_N
+
+        # Debug: log raw entropy range before normalization
+        _logger.debug(
+            "sure_attention: layer N=%d log_N=%.3f ent_raw min=%.4f max=%.4f mean=%.4f",
+            N, log_N,
+            float(ent_b.min()), float(ent_b.max()), float(ent_b.mean()),
+        )
+
         # Bilinear upsample to full latent resolution
         ent_up = F.interpolate(ent_spatial, (H_lat, W_lat),
                                mode="bilinear", align_corners=False)
@@ -217,16 +241,13 @@ def _aggregate_entropy_map(store: list, latent_shape: tuple,
     if not maps:
         return None
 
-    # Average across all captured layers → (B, 1, H_lat, W_lat)
+    # Average across all captured layers → (B, 1, H_lat, W_lat), values ∈ [0,1]
+    # (each layer was already normalised by its own log(N_k))
     U = torch.stack(maps, dim=0).mean(dim=0)
 
-    # Per-image min–max normalise to [0,1]  (Lean §5: entropy_norm_le_one)
-    U_flat = U.flatten(1)
-    U_min  = U_flat.min(dim=1)[0].reshape(B, 1, 1, 1)
-    U_max  = U_flat.max(dim=1)[0].reshape(B, 1, 1, 1)
-    U_norm = (U - U_min) / (U_max - U_min + 1e-8)
-
-    U_norm = U_norm.to(dtype=dtype)
+    # Clamp to [0,1] — log(N) normalisation should already give this, but floating
+    # point can produce tiny negatives near zero.  (Lean §5: entropy_norm_le_one)
+    U_norm = U.clamp(0.0, 1.0).to(dtype=dtype)
 
     if U_norm.isnan().any() or U_norm.isinf().any():
         _logger.warning("[sure_attn] NaN/Inf in entropy map after normalisation; skipping attention weighting")
