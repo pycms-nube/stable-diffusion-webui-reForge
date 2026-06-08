@@ -58,7 +58,7 @@ pydantic==2.13.4
 diffusers==0.38.0
 cachetools==5.5.1
 colorama==0.4.6
-huggingface_hub==0.36.2
+huggingface_hub==1.18.0
 timm==1.0.27
 packaging==26.2
 wheel==0.47.0
