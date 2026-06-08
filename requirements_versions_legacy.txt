@@ -14,7 +14,7 @@ inflection==0.5.1
 jsonmerge==1.9.2
 kornia==0.6.7
 lark==1.2.2
-numpy==1.26.4
+numpy==2.4.6
 omegaconf==2.2.3
 open-clip-torch==3.3.0
 piexif==1.1.3
