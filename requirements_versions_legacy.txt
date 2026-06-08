@@ -36,7 +36,7 @@ pillow-avif-plugin==1.4.6
 albumentations==1.4.3
 git+https://github.com/pydantic/pydantic.git@464ed49b1f813103a49116476bec75a94492b338
 diffusers==0.32.2
-cachetools==5.5.1
+cachetools==7.1.4
 colorama==0.4.6
 huggingface_hub==0.25.0
 timm==1.0.14

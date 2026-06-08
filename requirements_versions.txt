@@ -50,7 +50,7 @@ pydantic==2.13.4
 # and CVE-2026-45804 (TOCTOU RCE, GHSA-7wx4-6vff-v64p). Both rated high severity.
 # Requires safetensors>=0.8.0-rc.0 (pre-release — see note above).
 diffusers==0.38.0
-cachetools==5.5.1
+cachetools==7.1.4
 colorama==0.4.6
 huggingface_hub==0.36.2
 timm==1.0.27
