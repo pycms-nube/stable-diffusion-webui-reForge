@@ -29,6 +29,20 @@ Called from ``modules_forge/forge_loader.py`` after ldm model loading
 completes, gated behind ``cmd_opts.forge_jax_pipeline``. If jax is
 unavailable or activation fails, returns False silently (loud log message)
 and the standard PyTorch pipeline is used.
+
+Environment variables
+----------------------
+Set automatically (unless already set by you): ``CUDA_ROOT``,
+``XLA_PYTHON_CLIENT_PREALLOCATE=false``, ``XLA_FLAGS`` (adds
+``--xla_gpu_strict_conv_algorithm_picker=false``). See
+``_apply_*_workaround``/``_apply_*_default`` below for why.
+
+Opt-in only (NOT set automatically — see ``_apply_vmm_allocator_default``
+for why): ``JAX_PIPELINE_VMM_ALLOCATOR=1`` switches the GPU allocator to
+JAX's experimental CUDA VMM allocator. Confirmed to break CUDA backend
+registration entirely (silent fallback to CPU) against this project's
+pinned jaxlib==0.4.34 — only set this if you've upgraded jaxlib and
+confirmed it works for you.
 """
 
 from __future__ import annotations
@@ -38,6 +52,24 @@ import logging
 import os
 
 log = logging.getLogger(__name__)
+
+
+def _find_cuda_nvcc_spec():
+    """Locate the nvidia-cuda-nvcc-cu12 package spec, if installed.
+
+    Shared by the CUDA_ROOT workaround and the CUDA-backend detection used
+    to decide on the VMM allocator default — both need an answer before
+    ``import jax`` runs, so neither can use ``jax.default_backend()`` yet.
+    Presence of this package (pulled in by the ``jax[cuda12]`` extra) is
+    used as the CUDA-backend proxy signal.
+    """
+    try:
+        spec = importlib.util.find_spec("nvidia.cuda_nvcc")
+    except Exception:
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    return spec
 
 
 def _apply_cuda_nvcc_namespace_package_workaround() -> None:
@@ -61,11 +93,8 @@ def _apply_cuda_nvcc_namespace_package_workaround() -> None:
     """
     if os.environ.get("CUDA_ROOT"):
         return
-    try:
-        spec = importlib.util.find_spec("nvidia.cuda_nvcc")
-    except Exception:
-        return
-    if spec is None or not spec.submodule_search_locations:
+    spec = _find_cuda_nvcc_spec()
+    if spec is None:
         return
     os.environ["CUDA_ROOT"] = next(iter(spec.submodule_search_locations))
 
@@ -90,6 +119,42 @@ def _apply_vram_preallocation_default() -> None:
     if "XLA_PYTHON_CLIENT_PREALLOCATE" in os.environ or "XLA_PYTHON_CLIENT_MEM_FRACTION" in os.environ:
         return
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+
+def _apply_vmm_allocator_default() -> None:
+    """NOT auto-applied — see ``JAX_PIPELINE_VMM_ALLOCATOR`` below. Kept as
+    an explicit opt-in, not a default.
+
+    JAX's experimental ``XLA_PYTHON_CLIENT_ALLOCATOR=vmm`` (CUDA virtual
+    memory management allocator, cuMemAddressReserve/cuMemMap) is the
+    right tool for the fragmentation ``XLA_PYTHON_CLIENT_PREALLOCATE=false``
+    reintroduces — JAX's default BFC allocator is built around one large
+    preallocated arena and fragments piecemeal without it. But this
+    setting's documentation is only current for JAX's main/latest branch;
+    it broke CUDA backend registration entirely (jax.devices() silently
+    fell back to a CPU-only device list, no error surfaced) when tried
+    against this project's pinned jaxlib==0.4.34 — that build most likely
+    predates "vmm" support, and there is no way to detect that in advance
+    or recover within the same process (env vars controlling the XLA
+    client's allocator only take effect before the very first
+    ``import jax`` / client creation; once that's happened, re-importing
+    with a different XLA_PYTHON_CLIENT_ALLOCATOR value has no effect).
+
+    Because a silent CPU fallback is a much worse failure mode than
+    forgoing this optimization, it is not auto-applied. Set
+    ``JAX_PIPELINE_VMM_ALLOCATOR=1`` yourself (e.g. if you've upgraded to
+    a newer jaxlib you've confirmed supports it) to opt in explicitly.
+    """
+    if os.environ.get("JAX_PIPELINE_VMM_ALLOCATOR", "").strip().lower() not in ("1", "true"):
+        return
+    preallocate_off = os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE", "").strip().lower() in ("false", "0")
+    if not preallocate_off:
+        return
+    if "XLA_PYTHON_CLIENT_ALLOCATOR" in os.environ:
+        return
+    if _find_cuda_nvcc_spec() is None:
+        return
+    os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "vmm"
 
 
 def _apply_xla_conv_autotune_workaround() -> None:
@@ -142,6 +207,7 @@ def _jax_probe():
     """
     _apply_cuda_nvcc_namespace_package_workaround()
     _apply_vram_preallocation_default()
+    _apply_vmm_allocator_default()
     _apply_xla_conv_autotune_workaround()
     try:
         import jax
