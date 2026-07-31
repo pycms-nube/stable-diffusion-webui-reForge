@@ -65,6 +65,7 @@ webui-user-8160-gpu3-nopass_fp8.sh
 !webui-macos-env.sh
 !webui-user.bat
 !webui-backend.sh
+!webui-frontend.sh
 webui-user.sh
 CLAUDE.md
 .claude/settings.local.json

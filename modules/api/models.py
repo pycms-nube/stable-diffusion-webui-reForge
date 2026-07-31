@@ -237,7 +237,7 @@ FlagsModel = create_model("Flags", **flags)
 class SamplerItem(BaseModel):
     name: str = Field(title="Name")
     aliases: list[str] = Field(title="Aliases")
-    options: dict[str, str] = Field(title="Options")
+    options: dict[str, Any] = Field(title="Options")  # real values include bools (second_order, brownian_noise, uses_ensd, ...), not just strings
 
 class SchedulerItem(BaseModel):
     name: str = Field(title="Name")

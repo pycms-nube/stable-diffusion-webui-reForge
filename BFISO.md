@@ -240,6 +240,23 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   and identical `info` dicts (seed, subseed, sampler, model hash, version — everything)
   on a clean re-run. Also closes out the phase list with an honest accounting of what
   Phases 0–7 actually proved versus what real cutover work remains.
+- **Phase 8 — The actual cutover. Done, see [PHASE8.md](PHASE8.md).** A genuinely
+  torch-free process (new `modules_frontend/txt2img_ui.py` + `webui_frontend.py` +
+  `webui-frontend.sh` — not `modules/ui.py`/`webui.py`, both confirmed torch-coupled)
+  drove a real txt2img generation against a separate `webui-backend.sh` process purely
+  over HTTP. Verified in a from-scratch venv with `gradio==3.41.2 numpy==1.26.4
+  pillow==10.4.0 requests` and **no torch package at all** (confirmed via `pip list`).
+  Found and fixed 4 real bugs surfaced only by actually running this: an argparse
+  collision (`IGNORE_CMD_ARGS_ERRORS`, an existing escape hatch), a Gradio/Starlette
+  `TemplateResponse` incompatibility (standalone shim, avoiding
+  `modules.ui_gradio_extensions`'s torch-heavy import chain), a pre-existing
+  `SamplerItem.options` type bug (`dict[str,str]` → `dict[str,Any]`, real booleans in
+  real sampler configs), and — the important one — PHASE3.md's `modules/safe.py`
+  blocker manifesting for real via `InputAccordion`'s lazy import, fixed by reverting
+  that one component to a plain Checkbox. Script args aren't wired into the generation
+  request yet, and there's no live progress — both named explicitly as follow-up, not
+  hidden. Committed as its own isolated commit, separate from the Phase 0–7 baseline, so
+  it can be reverted on its own if something's wrong.
 
 ## 7. Non-goals
 

@@ -9,8 +9,6 @@ process, and PHASE4.md for how this module was verified against real script sche
 """
 import gradio as gr
 
-from modules.ui_components import InputAccordion
-
 
 def _build_slider(arg):
     return gr.Slider(
@@ -70,11 +68,16 @@ def _build_textbox(arg):
 
 
 def _build_input_accordion(arg):
-    # InputAccordion (modules/ui_components.py) is a real gr.Checkbox subclass that
-    # also drives an Accordion's open/closed state -- use the actual class so the
-    # reconstructed control keeps that behavior instead of degrading to a plain
-    # Checkbox.
-    return InputAccordion(label=arg.get("label") or "", value=bool(arg.get("value")))
+    # InputAccordion (modules/ui_components.py) is a real gr.Checkbox subclass, and
+    # using the actual class was tried (PHASE4.md) for better fidelity than a plain
+    # Checkbox. Reverted (PHASE8.md): its __init__ lazily imports
+    # modules.script_callbacks, which transitively reaches modules.scripts ->
+    # modules.paths -> modules.safe -> `import torch` -- confirmed by actually
+    # running this module in a torch-free venv, which is the one thing this file's
+    # docstring promises never to need. A plain Checkbox has the same value
+    # semantics (open/closed as True/False); it just doesn't drive the paired
+    # Accordion's visual open/close state.
+    return gr.Checkbox(label=arg.get("label") or "", value=bool(arg.get("value")))
 
 
 def _build_fallback(arg):
