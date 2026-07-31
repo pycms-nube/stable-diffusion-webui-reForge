@@ -315,6 +315,9 @@ class ScriptArg(BaseModel):
     maximum: Optional[Any] = Field(default=None, title="Minimum", description="Maximum allowed value for the argumentin UI")
     step: Optional[Any] = Field(default=None, title="Minimum", description="Step for changing value of the argumentin UI")
     choices: Optional[list[str]] = Field(default=None, title="Choices", description="Possible values for the argument")
+    component: Optional[str] = Field(default=None, title="Component", description="Gradio component class name backing this argument (e.g. 'Slider', 'Checkbox', 'Dropdown'), so a UI can be reconstructed without importing the script module itself")
+    multiselect: Optional[bool] = Field(default=None, title="Multiselect", description="For Dropdown/CheckboxGroup components, whether multiple choices can be selected at once (value is a list, not a scalar)")
+    lines: Optional[int] = Field(default=None, title="Lines", description="For Textbox components, the number of visible lines")
 
 
 class ScriptInfo(BaseModel):

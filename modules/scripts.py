@@ -675,9 +675,9 @@ class ScriptRunner:
         for control in controls:
             control.custom_script_source = os.path.basename(script.filename)
 
-            arg_info = api_models.ScriptArg(label=control.label or "")
+            arg_info = api_models.ScriptArg(label=control.label or "", component=type(control).__name__)
 
-            for field in ("value", "minimum", "maximum", "step"):
+            for field in ("value", "minimum", "maximum", "step", "lines"):
                 v = getattr(control, field, None)
                 if v is not None:
                     setattr(arg_info, field, v)
@@ -685,6 +685,10 @@ class ScriptRunner:
             choices = getattr(control, 'choices', None)  # as of gradio 3.41, some items in choices are strings, and some are tuples where the first elem is the string
             if choices is not None:
                 arg_info.choices = [x[0] if isinstance(x, tuple) else x for x in choices]
+
+            multiselect = getattr(control, 'multiselect', None)
+            if multiselect is not None:
+                arg_info.multiselect = multiselect
 
             api_args.append(arg_info)
 

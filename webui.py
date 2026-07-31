@@ -60,7 +60,8 @@ def api_only_worker() -> None:
     initialize_util.setup_middleware(app)
     api: Api = create_api(app)
 
-    from modules import script_callbacks
+    from modules import progress, script_callbacks
+    progress.setup_progress_api(app)
     script_callbacks.before_ui_callback()
     script_callbacks.app_started_callback(None, app)
 

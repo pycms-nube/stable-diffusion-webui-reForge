@@ -1,9 +1,12 @@
-from ldm.models.diffusion.ddpm import LatentDiffusion
 from typing import TYPE_CHECKING
 
-
 if TYPE_CHECKING:
+    from ldm.models.diffusion.ddpm import LatentDiffusion
     from modules.sd_models import CheckpointInfo
+else:
+    # WebuiSdModel is never instantiated (see docstring) -- only its type matters, so
+    # avoid pulling in `ldm` (and therefore torch) just to import this module.
+    LatentDiffusion = object
 
 
 class WebuiSdModel(LatentDiffusion):

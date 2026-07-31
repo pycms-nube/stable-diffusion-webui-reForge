@@ -1,8 +1,11 @@
+import asyncio
 import base64
 import io
 import time
 
 import gradio as gr
+from fastapi import Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import modules.shared as shared
@@ -16,6 +19,11 @@ pending_tasks = OrderedDict()
 finished_tasks = []
 recorded_results = []
 recorded_results_limit = 2
+
+# Give up on an SSE stream whose id_task never becomes active/queued/completed
+# (e.g. a bad or stale id), so a client that never disconnects can't leave a
+# generator polling forever.
+PROGRESS_STREAM_UNKNOWN_TASK_TIMEOUT = 300
 
 
 def start_task(id_task):
@@ -73,6 +81,7 @@ class ProgressResponse(BaseModel):
 
 def setup_progress_api(app):
     app.add_api_route("/internal/pending-tasks", get_pending_tasks, methods=["GET"])
+    app.add_api_route("/internal/progress-stream", progress_stream, methods=["GET"])
     return app.add_api_route("/internal/progress", progressapi, methods=["POST"], response_model=ProgressResponse)
 
 
@@ -82,7 +91,9 @@ def get_pending_tasks():
     return PendingTasksResponse(size=pending_len, tasks=pending_tasks_ids)
 
 
-def progressapi(req: ProgressRequest):
+def _compute_progress(req: ProgressRequest) -> ProgressResponse:
+    """Core progress computation, shared by the POST /internal/progress (long-poll)
+    and GET /internal/progress-stream (SSE) endpoints so they can't drift apart."""
     active = req.id_task == current_task
     queued = req.id_task in pending_tasks
     completed = req.id_task in finished_tasks
@@ -137,6 +148,51 @@ def progressapi(req: ProgressRequest):
                 id_live_preview = shared.state.id_live_preview
 
     return ProgressResponse(active=active, queued=queued, completed=completed, progress=progress, eta=eta, live_preview=live_preview, id_live_preview=id_live_preview, textinfo=shared.state.textinfo)
+
+
+def progressapi(req: ProgressRequest):
+    return _compute_progress(req)
+
+
+async def _progress_event_generator(request: Request, req: ProgressRequest):
+    """Server-side polling of the same state progressapi() reads, pushed as SSE
+    instead of waiting for the client to re-request. Not event-driven -- it's a
+    timer loop reusing _compute_progress() -- but that's a deliberate choice: it
+    needed no changes to the sampler/shared_state at all, only this endpoint."""
+    interval = max((shared.opts.live_preview_refresh_period or 500) / 1000, 0.1)
+    unknown_since = None
+
+    while True:
+        if await request.is_disconnected():
+            break
+
+        response = _compute_progress(req)
+        yield f"data: {response.model_dump_json()}\n\n"
+
+        if response.completed:
+            break
+
+        if not response.active and not response.queued:
+            unknown_since = unknown_since or time.time()
+            if time.time() - unknown_since > PROGRESS_STREAM_UNKNOWN_TASK_TIMEOUT:
+                break
+        else:
+            unknown_since = None
+
+        # carry forward the live preview id we just sent, same as the long-poll
+        # client does, so unchanged frames aren't re-encoded and re-sent
+        if response.id_live_preview is not None:
+            req.id_live_preview = response.id_live_preview
+
+        await asyncio.sleep(interval)
+
+
+def progress_stream(request: Request, id_task: str, id_live_preview: int = -1, live_preview: bool = True):
+    """GET, not POST: browsers' native EventSource API only supports GET with no
+    custom body, so params travel as a query string instead of the ProgressRequest
+    JSON body progressapi() takes."""
+    req = ProgressRequest(id_task=id_task, id_live_preview=id_live_preview, live_preview=live_preview)
+    return StreamingResponse(_progress_event_generator(request, req), media_type="text/event-stream")
 
 
 def restore_progress(id_task):
