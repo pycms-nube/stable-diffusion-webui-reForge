@@ -390,6 +390,16 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   shaped like Gradio's own `gr.File` output (`.name` attribute) against the real
   backend: real progress ticks `0/2 → 1/2 → 2/2 → done`, 2 real result images
   returned.
+- **Phase 19 — Layout polish. Done, see [PHASE19.md](PHASE19.md).** Closed the "flat
+  layout" gap named since Phase 8 with lightweight `gr.Markdown()` section headers
+  (Sampling/Size/Batch/Options/Sampler & Seed) on both tabs — purely cosmetic, no
+  component moved, renamed, or rewired; every `.click()` input list is byte-for-byte
+  unchanged. Deliberately not a full rebuild into the shipped UI's nested-accordion/
+  conditional-visibility structure, given this was explicitly the lowest-priority item
+  on the list. No regression in `pytest test/test_txt2img.py test/test_img2img.py`
+  (unsurprising, since no backend/request-payload logic changed). Closes out the
+  Phase 16-19 batch of non-functional/cosmetic gaps the user asked to implement
+  together and review once at the end, rather than after each individual phase.
 
 ## 7. Non-goals
 

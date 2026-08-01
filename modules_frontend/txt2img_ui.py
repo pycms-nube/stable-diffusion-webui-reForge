@@ -29,8 +29,13 @@ that translation client-side (see its own comment) so picking the sentinel defau
 behaves identically to leaving these fields unset, rather than sending a literal
 "Use same sampler" string a sampler lookup would reject.
 
-Scope, still honest: flat layout (no accordion/category sectioning matching the
-shipped UI).
+Phase 19 (PHASE19.md) added lightweight section headers (Sampling/Size/Batch/
+Options/Sampler & Seed) grouping the existing controls, closer to the shipped UI's
+category sectioning -- a purely visual change, no components moved, renamed, or
+rewired; every existing input to run_txt2img() and its click handler is untouched.
+
+Scope, still honest: section headers only, not the shipped UI's full nested
+Accordion-per-category layout.
 """
 import functools
 import json
@@ -142,22 +147,27 @@ def create_txt2img_tab(backend_url):
             prompt = gr.Textbox(label="Prompt", lines=3, placeholder="a photo of...")
             negative_prompt = gr.Textbox(label="Negative prompt", lines=2)
 
+            gr.Markdown("#### Sampling")
             with gr.Row():
                 steps = gr.Slider(label="Steps", minimum=1, maximum=150, step=1, value=20)
                 cfg_scale = gr.Slider(label="CFG Scale", minimum=1, maximum=30, step=0.5, value=7)
 
+            gr.Markdown("#### Size")
             with gr.Row():
                 width = gr.Slider(label="Width", minimum=64, maximum=2048, step=8, value=512)
                 height = gr.Slider(label="Height", minimum=64, maximum=2048, step=8, value=512)
 
+            gr.Markdown("#### Batch")
             with gr.Row():
                 batch_count = gr.Slider(label="Batch count", minimum=1, maximum=50, step=1, value=1)
                 batch_size = gr.Slider(label="Batch size", minimum=1, maximum=8, step=1, value=1)
 
+            gr.Markdown("#### Options")
             with gr.Row():
                 restore_faces = gr.Checkbox(label="Restore faces", value=False)
                 tiling = gr.Checkbox(label="Tiling", value=False)
 
+            gr.Markdown("#### Sampler & Seed")
             with gr.Row():
                 try:
                     sampler_choices = fetch_samplers(backend_url)

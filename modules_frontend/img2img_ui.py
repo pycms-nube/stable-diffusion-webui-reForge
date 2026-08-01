@@ -38,8 +38,13 @@ architecturally awkward for a frontend/backend that might not share a filesystem
 mid-image (a plain "Processing N/M" message between calls, not the SSE preview
 Generate gets).
 
+Phase 19 (PHASE19.md) added lightweight section headers (Sampling/Size/Batch/
+Options/Sampler & Seed), matching txt2img_ui.py's equivalent change -- a purely
+visual grouping of the existing controls, no rewiring.
+
 Scope, honest: img2img with mask-upload or sketch-drawn inpainting, Upload/Paint init
-image source, and upload-multiple-images batch processing. No color-difference-based
+image source, upload-multiple-images batch processing, and section headers only (not
+the shipped UI's full nested Accordion-per-category layout). No color-difference-based
 "Inpaint sketch" masking (distinct from plain color-sketch-as-source). See
 PHASE12.md / PHASE13.md / PHASE14.md / PHASE17.md / PHASE18.md for what's deferred.
 """
@@ -256,6 +261,7 @@ def create_img2img_tab(backend_url):
             prompt = gr.Textbox(label="Prompt", lines=3, placeholder="a photo of...")
             negative_prompt = gr.Textbox(label="Negative prompt", lines=2)
 
+            gr.Markdown("#### Sampling")
             with gr.Row():
                 steps = gr.Slider(label="Steps", minimum=1, maximum=150, step=1, value=20)
                 cfg_scale = gr.Slider(label="CFG Scale", minimum=1, maximum=30, step=0.5, value=7)
@@ -264,18 +270,22 @@ def create_img2img_tab(backend_url):
                 denoising_strength = gr.Slider(label="Denoising strength", minimum=0.0,
                                                 maximum=1.0, step=0.01, value=0.75)
 
+            gr.Markdown("#### Size")
             with gr.Row():
                 width = gr.Slider(label="Width", minimum=64, maximum=2048, step=8, value=512)
                 height = gr.Slider(label="Height", minimum=64, maximum=2048, step=8, value=512)
 
+            gr.Markdown("#### Batch")
             with gr.Row():
                 batch_count = gr.Slider(label="Batch count", minimum=1, maximum=50, step=1, value=1)
                 batch_size = gr.Slider(label="Batch size", minimum=1, maximum=8, step=1, value=1)
 
+            gr.Markdown("#### Options")
             with gr.Row():
                 restore_faces = gr.Checkbox(label="Restore faces", value=False)
                 tiling = gr.Checkbox(label="Tiling", value=False)
 
+            gr.Markdown("#### Sampler & Seed")
             with gr.Row():
                 try:
                     sampler_choices = fetch_samplers(backend_url)
