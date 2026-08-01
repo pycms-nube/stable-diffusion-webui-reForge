@@ -1,5 +1,5 @@
 """
-BFISO Phase 8 -- a genuinely torch-free txt2img UI.
+BFISO Phase 8/9 -- a genuinely torch-free txt2img UI.
 
 This module (and webui_frontend.py, which launches it) is the actual cutover proof:
 everything up to now (PHASE0-7.md) built and verified the pieces, but the shipped
@@ -10,16 +10,22 @@ modules.ui_script_schema (itself torch-free, see PHASE4.md) -- and drives genera
 entirely over HTTP against a separately-running backend (webui-backend.sh or the full
 app's --api mode).
 
-Scope, honestly: txt2img only, core params only. Script controls are fetched and
-rendered live from the backend's real /sdapi/v1/script-info schema (proving Phase 4's
-builder works in a real app, not just a verification harness), but their values are not
-yet wired back into the generation request -- see PHASE8.md for why that's a separate,
-larger follow-up (matching alwayson_scripts argument order/shape) rather than bundled
-into this first cutover slice.
+Phase 9 (see PHASE9.md) closed the two biggest gaps Phase 8 named explicitly: script
+control values are now sent with the request (alwayson_scripts), and generation shows
+live progress + preview via Phase 5's SSE stream, using the existing force_task_id
+field on the txt2img request so the frontend can pick its own task id up front and
+poll for it while the (blocking) POST runs in a background thread.
+
+Scope, still honest: txt2img only, core params only. No img2img/other tabs, layout is
+flat (no accordion/category sectioning matching the shipped UI).
 """
 import base64
+import functools
 import io
 import json
+import threading
+import time
+import uuid
 
 import gradio as gr
 import requests
@@ -51,13 +57,91 @@ def fetch_script_info(backend_url):
 
 
 def decode_images(b64_list):
-    images = []
-    for b64 in b64_list:
-        images.append(Image.open(io.BytesIO(base64.b64decode(b64))))
-    return images
+    return [Image.open(io.BytesIO(base64.b64decode(b64))) for b64 in b64_list]
 
 
-def run_txt2img(backend_url, prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height, seed):
+def _decode_data_uri(data_uri):
+    _header, b64data = data_uri.split(",", 1)
+    return Image.open(io.BytesIO(base64.b64decode(b64data)))
+
+
+def build_alwayson_script_controls(backend_url):
+    """Renders every alwayson script's controls, schema-built (PHASE4.md), inside its
+    own Accordion. Returns [(script_name, [gr.Component, ...]), ...] in the same order
+    the backend's own script list expects args in -- required so run_txt2img can
+    rebuild the alwayson_scripts payload on submit (see module docstring)."""
+    try:
+        script_info = fetch_script_info(backend_url)
+    except RuntimeError as e:
+        gr.Markdown(f"⚠️ Could not load script list: {e}")
+        return []
+
+    alwayson = [s for s in script_info if s.get("is_alwayson") and not s.get("is_img2img") and s.get("args")]
+    if not alwayson:
+        gr.Markdown("(no always-on txt2img scripts reported by the backend)")
+        return []
+
+    script_controls = []
+    for script in alwayson:
+        with gr.Accordion(script["name"], open=False):
+            controls = build_controls_from_schema(script["args"])
+        script_controls.append((script["name"], controls))
+    return script_controls
+
+
+def _post_txt2img(backend_url, payload, result_box):
+    try:
+        r = requests.post(f"{backend_url}/sdapi/v1/txt2img", json=payload, timeout=600)
+        r.raise_for_status()
+        result_box["response"] = r.json()
+    except requests.RequestException as e:
+        result_box["error"] = e
+    finally:
+        result_box["done"] = True
+
+
+def _stream_progress(backend_url, id_task, result_box):
+    """Yields (progress_text, preview_image_or_None) until result_box['done'] is set
+    by the background POST thread. A best-effort display, not the source of truth for
+    the actual result -- the POST response is."""
+    url = f"{backend_url}/internal/progress-stream"
+    params = {"id_task": id_task, "live_preview": "true"}
+    try:
+        with requests.get(url, params=params, stream=True, timeout=600) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines(decode_unicode=True):
+                if result_box.get("done"):
+                    break
+                if not line or not line.startswith("data:"):
+                    continue
+                event = json.loads(line[len("data:"):].strip())
+                pct = event.get("progress")
+                pct_text = f"{pct * 100:.0f}%" if pct is not None else "..."
+                textinfo = event.get("textinfo") or ""
+                preview = None
+                if event.get("live_preview"):
+                    try:
+                        preview = _decode_data_uri(event["live_preview"])
+                    except (ValueError, OSError):
+                        preview = None
+                yield f"{pct_text} {textinfo}".strip(), preview
+                if event.get("completed"):
+                    break
+    except requests.RequestException:
+        # SSE is a progress nicety; the POST thread (and its own error handling)
+        # remains the actual source of truth for success/failure.
+        return
+
+
+def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampler_name,
+                 cfg_scale, width, height, seed, *script_arg_values):
+    alwayson_scripts = {}
+    idx = 0
+    for name, count in script_specs:
+        alwayson_scripts[name] = {"args": list(script_arg_values[idx:idx + count])}
+        idx += count
+
+    id_task = f"task(frontend-{uuid.uuid4().hex[:12]})"
     payload = {
         "prompt": prompt,
         "negative_prompt": negative_prompt,
@@ -67,46 +151,39 @@ def run_txt2img(backend_url, prompt, negative_prompt, steps, sampler_name, cfg_s
         "width": int(width),
         "height": int(height),
         "seed": int(seed),
+        "force_task_id": id_task,
     }
-    try:
-        r = requests.post(f"{backend_url}/sdapi/v1/txt2img", json=payload, timeout=600)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        raise gr.Error(f"Generation request to {backend_url} failed: {e}") from e
+    if alwayson_scripts:
+        payload["alwayson_scripts"] = alwayson_scripts
 
-    data = r.json()
-    images = decode_images(data["images"])
+    result_box = {}
+    thread = threading.Thread(target=_post_txt2img, args=(backend_url, payload, result_box), daemon=True)
+    thread.start()
+
+    # Give the backend a moment to register the task before we start polling for it,
+    # then stream progress until the POST thread reports done.
+    time.sleep(0.2)
+    for progress_text, preview in _stream_progress(backend_url, id_task, result_box):
+        yield progress_text, preview, gr.update(), gr.update()
+
+    thread.join(timeout=600)
+
+    if result_box.get("error"):
+        raise gr.Error(f"Generation request to {backend_url} failed: {result_box['error']}")
+
+    data = result_box.get("response") or {}
+    images = decode_images(data.get("images", []))
     info = json.loads(data.get("info", "{}"))
     infotext = (info.get("infotexts") or [""])[0]
-    return images, infotext
-
-
-def build_alwayson_script_controls(backend_url):
-    """Renders every alwayson script's controls, schema-built (PHASE4.md), inside its
-    own Accordion. Live and interactive against real backend data -- not yet wired
-    back into the generation request (see module docstring / PHASE8.md)."""
-    try:
-        script_info = fetch_script_info(backend_url)
-    except RuntimeError as e:
-        gr.Markdown(f"⚠️ Could not load script list: {e}")
-        return
-
-    alwayson = [s for s in script_info if s.get("is_alwayson") and not s.get("is_img2img") and s.get("args")]
-    if not alwayson:
-        gr.Markdown("(no always-on txt2img scripts reported by the backend)")
-        return
-
-    for script in alwayson:
-        with gr.Accordion(script["name"], open=False):
-            build_controls_from_schema(script["args"])
+    yield "done", None, images, infotext
 
 
 def create_ui(backend_url=DEFAULT_BACKEND_URL):
-    with gr.Blocks(title="reForge -- frontend (torch-free proof, BFISO Phase 8)") as demo:
+    with gr.Blocks(title="reForge -- frontend (torch-free proof, BFISO Phase 8/9)") as demo:
         gr.Markdown(
             f"### Standalone frontend -- backend: `{backend_url}`\n"
-            "BFISO Phase 8 proof: this process has no torch installed. txt2img only; "
-            "script controls are live but not yet sent with the request -- see PHASE8.md."
+            "BFISO Phase 8/9 proof: this process has no torch installed. txt2img only; "
+            "script control values are sent with the request and progress streams live -- see PHASE9.md."
         )
 
         with gr.Row():
@@ -132,19 +209,34 @@ def create_ui(backend_url=DEFAULT_BACKEND_URL):
                                                 value=sampler_choices[0] if sampler_choices else None)
                     seed = gr.Number(label="Seed", value=-1, precision=0)
 
-                with gr.Accordion("Scripts (preview -- not yet sent with request)", open=False):
-                    build_alwayson_script_controls(backend_url)
+                with gr.Accordion("Scripts", open=False):
+                    script_controls = build_alwayson_script_controls(backend_url)
+                script_specs = [(name, len(controls)) for name, controls in script_controls]
+                flat_script_inputs = [c for _name, controls in script_controls for c in controls]
 
                 generate_btn = gr.Button("Generate", variant="primary")
+                progress_box = gr.Textbox(label="Progress", interactive=False)
 
             with gr.Column(scale=5):
+                preview_image = gr.Image(label="Live preview", interactive=False)
                 gallery = gr.Gallery(label="Output", show_label=True, columns=2)
                 infotext_box = gr.Textbox(label="Generation info", lines=4, interactive=False)
 
         generate_btn.click(
-            fn=lambda *args: run_txt2img(backend_url, *args),
-            inputs=[prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height, seed],
-            outputs=[gallery, infotext_box],
+            # functools.partial (not a lambda) so Gradio's
+            # inspect.isgeneratorfunction(fn) check still sees run_txt2img's `yield`
+            # through the wrapper -- a lambda wrapping a generator function is itself
+            # NOT a generator function, since calling it just returns a generator
+            # object rather than yielding, and Gradio silently expects a single
+            # return value in that case (found by actually clicking Generate).
+            fn=functools.partial(run_txt2img, backend_url, script_specs),
+            inputs=[prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height, seed, *flat_script_inputs],
+            outputs=[progress_box, preview_image, gallery, infotext_box],
         )
 
+    # Gradio 3.x requires an explicit queue to stream multiple yields from a
+    # generator-based click handler back to the client -- without this,
+    # run_txt2img's progress/preview yields fail with "Need to enable queue to use
+    # generators" (found by actually clicking Generate).
+    demo.queue()
     return demo

@@ -257,6 +257,24 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   request yet, and there's no live progress — both named explicitly as follow-up, not
   hidden. Committed as its own isolated commit, separate from the Phase 0–7 baseline, so
   it can be reverted on its own if something's wrong.
+- **Phase 9 — Script args + live progress. Done, see [PHASE9.md](PHASE9.md).** Closed
+  Phase 8's two named gaps in the same `modules_frontend/txt2img_ui.py`. Script controls'
+  values are now sliced back into `alwayson_scripts` and sent with the request —
+  verified genuinely reaching the backend via a real script's own `info` output
+  (`mahiro_cfg_enabled: True`), not just a payload-shape assumption. Live progress uses
+  the request's existing `force_task_id` field plus Phase 5's SSE stream, via a
+  generator-based click handler backed by a background thread for the blocking POST.
+  Found and fixed two real Gradio 3.x quirks along the way: a `lambda` wrapping a
+  generator function isn't itself detected as one (`functools.partial` fixes it), and
+  generator-yielding event handlers need `demo.queue()` explicitly enabled. Progress and
+  script-arg wiring verified live in a real browser; live-preview verification switched
+  mid-phase from automated browser testing to the user manually confirming it in their
+  own browser, after a host OS crash during heavy automated generation testing (cause
+  undiagnosed) — the user confirmed both progress ticking through real values and the
+  preview image updating live. No regression in
+  `pytest test/test_txt2img.py test/test_img2img.py` (identical baseline to every prior
+  phase). Torch-freedom verified by import inspection rather than a fresh from-scratch
+  venv re-run this time (only stdlib additions: `functools`/`threading`/`time`/`uuid`).
 
 ## 7. Non-goals
 
