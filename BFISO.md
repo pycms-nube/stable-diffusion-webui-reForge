@@ -290,6 +290,19 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   Skip/Interrupt actually interrupt) handed to the user for manual browser confirmation
   instead of automated rapid-polling loops, per the user's explicit request to avoid the
   testing pattern that preceded the crash.
+- **Phase 11 — Hires. fix. Done, see [PHASE11.md](PHASE11.md).** Added `enable_hr` plus
+  its five core sub-params (`hr_scale`, `hr_upscaler`, `hr_second_pass_steps`,
+  `denoising_strength`, `hr_resize_x`/`hr_resize_y`) in their own Accordion. The
+  upscaler dropdown is built from the union of `/sdapi/v1/latent-upscale-modes` and
+  `/sdapi/v1/upscalers`, matching exactly what backend-side validation checks against.
+  Verified reaching the real pipeline via a single `curl` request's returned infotext.
+  Investigated a user-reported discrepancy (Hires steps = 0 appearing to skip the second
+  pass) with a controlled pixel-level comparison — two identical requests differing only
+  in that field decoded to byte-for-byte identical images, proving the `0 → use base
+  steps` fallback works correctly; the apparent skip was `modules/processing.py` only
+  writing `"Hires steps"` into infotext when the value is truthy, which the shipped
+  UI's own identically-defaulted-to-0 slider shares, so no fix was applied. No
+  regression risk since no backend code changed.
 
 ## 7. Non-goals
 

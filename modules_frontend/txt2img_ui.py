@@ -22,8 +22,18 @@ tracking needed here since shared.state lives entirely backend-side) and the bat
 count/size + restore faces/tiling params that were missing from the request payload
 even though the UI never exposed them.
 
+Phase 11 (see PHASE11.md) added Hires. fix: enable_hr plus its five core sub-params
+(hr_scale, hr_upscaler, hr_second_pass_steps, denoising_strength, hr_resize_x/y),
+tucked into their own Accordion so the base form doesn't grow when unused. The
+upscaler dropdown is populated from the backend's own /sdapi/v1/latent-upscale-modes
++ /sdapi/v1/upscalers, the same two lists the real hr_upscaler validation in
+processing.py checks against.
+
 Scope, still honest: txt2img only, core params only. No img2img/other tabs, layout is
-flat (no accordion/category sectioning matching the shipped UI), no hires-fix.
+flat (no conditional visibility -- Hires params always render, matching them being
+sent unconditionally too; see PHASE11.md), no hr_checkpoint_name/hr_sampler_name/
+hr_scheduler/hr_prompt/hr_negative_prompt/hr_cfg (advanced hires overrides, left at
+their None/same-as-base defaults).
 """
 import base64
 import functools
@@ -53,6 +63,18 @@ def fetch_samplers(backend_url):
         return [s["name"] for s in _get(backend_url, "/sdapi/v1/samplers")]
     except requests.RequestException as e:
         raise RuntimeError(f"Could not reach backend at {backend_url} for /sdapi/v1/samplers: {e}") from e
+
+
+def fetch_hr_upscalers(backend_url):
+    """hr_upscaler is validated backend-side (modules/processing.py) against the union
+    of shared.latent_upscale_modes and shared.sd_upscalers -- so the dropdown has to
+    offer exactly that union, not just one or the other, or a legal choice would 422."""
+    try:
+        latent_modes = [m["name"] for m in _get(backend_url, "/sdapi/v1/latent-upscale-modes")]
+        upscalers = [u["name"] for u in _get(backend_url, "/sdapi/v1/upscalers")]
+    except requests.RequestException as e:
+        raise RuntimeError(f"Could not reach backend at {backend_url} for upscaler lists: {e}") from e
+    return latent_modes + upscalers
 
 
 def fetch_script_info(backend_url):
@@ -163,7 +185,8 @@ def _stream_progress(backend_url, id_task, result_box):
 
 def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampler_name,
                  cfg_scale, width, height, seed, batch_count, batch_size, restore_faces,
-                 tiling, *script_arg_values):
+                 tiling, enable_hr, hr_scale, hr_upscaler, hr_second_pass_steps,
+                 denoising_strength, hr_resize_x, hr_resize_y, *script_arg_values):
     alwayson_scripts = {}
     idx = 0
     for name, count in script_specs:
@@ -184,6 +207,13 @@ def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampl
         "batch_size": int(batch_size),
         "restore_faces": bool(restore_faces),
         "tiling": bool(tiling),
+        "enable_hr": bool(enable_hr),
+        "hr_scale": float(hr_scale),
+        "hr_upscaler": hr_upscaler,
+        "hr_second_pass_steps": int(hr_second_pass_steps),
+        "denoising_strength": float(denoising_strength),
+        "hr_resize_x": int(hr_resize_x),
+        "hr_resize_y": int(hr_resize_y),
         "force_task_id": id_task,
     }
     if alwayson_scripts:
@@ -212,12 +242,13 @@ def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampl
 
 
 def create_ui(backend_url=DEFAULT_BACKEND_URL):
-    with gr.Blocks(title="reForge -- frontend (torch-free proof, BFISO Phase 8/9/10)") as demo:
+    with gr.Blocks(title="reForge -- frontend (torch-free proof, BFISO Phase 8/9/10/11)") as demo:
         gr.Markdown(
             f"### Standalone frontend -- backend: `{backend_url}`\n"
-            "BFISO Phase 8/9/10 proof: this process has no torch installed. txt2img only; "
-            "script control values are sent with the request, progress streams live, and "
-            "Interrupt/Skip are wired up -- see PHASE9.md / PHASE10.md."
+            "BFISO Phase 8/9/10/11 proof: this process has no torch installed. txt2img only; "
+            "script control values are sent with the request, progress streams live, "
+            "Interrupt/Skip are wired up, and Hires. fix is supported -- see "
+            "PHASE9.md / PHASE10.md / PHASE11.md."
         )
 
         with gr.Row():
@@ -251,6 +282,26 @@ def create_ui(backend_url=DEFAULT_BACKEND_URL):
                                                 value=sampler_choices[0] if sampler_choices else None)
                     seed = gr.Number(label="Seed", value=-1, precision=0)
 
+                with gr.Accordion("Hires. fix", open=False):
+                    enable_hr = gr.Checkbox(label="Enable Hires. fix", value=False)
+                    with gr.Row():
+                        try:
+                            hr_upscaler_choices = fetch_hr_upscalers(backend_url)
+                        except RuntimeError as e:
+                            hr_upscaler_choices = []
+                            gr.Markdown(f"⚠️ {e}")
+                        hr_upscaler = gr.Dropdown(label="Upscaler", choices=hr_upscaler_choices,
+                                                   value=hr_upscaler_choices[0] if hr_upscaler_choices else None)
+                        hr_second_pass_steps = gr.Slider(label="Hires steps", minimum=0, maximum=150,
+                                                          step=1, value=0)
+                    with gr.Row():
+                        hr_scale = gr.Slider(label="Upscale by", minimum=1.0, maximum=4.0, step=0.05, value=2.0)
+                        denoising_strength = gr.Slider(label="Denoising strength", minimum=0.0,
+                                                        maximum=1.0, step=0.01, value=0.75)
+                    with gr.Row():
+                        hr_resize_x = gr.Number(label="Resize width to (0 = use Upscale by)", value=0, precision=0)
+                        hr_resize_y = gr.Number(label="Resize height to (0 = use Upscale by)", value=0, precision=0)
+
                 with gr.Accordion("Scripts", open=False):
                     script_controls = build_alwayson_script_controls(backend_url)
                 script_specs = [(name, len(controls)) for name, controls in script_controls]
@@ -276,7 +327,9 @@ def create_ui(backend_url=DEFAULT_BACKEND_URL):
             # return value in that case (found by actually clicking Generate).
             fn=functools.partial(run_txt2img, backend_url, script_specs),
             inputs=[prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height, seed,
-                    batch_count, batch_size, restore_faces, tiling, *flat_script_inputs],
+                    batch_count, batch_size, restore_faces, tiling, enable_hr, hr_scale, hr_upscaler,
+                    hr_second_pass_steps, denoising_strength, hr_resize_x, hr_resize_y,
+                    *flat_script_inputs],
             outputs=[progress_box, preview_image, gallery, infotext_box],
         )
         skip_btn.click(fn=functools.partial(skip_current_image, backend_url), outputs=[progress_box])
