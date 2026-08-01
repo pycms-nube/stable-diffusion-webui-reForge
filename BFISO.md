@@ -370,6 +370,17 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   this helper. Part of a batch of non-functional/cosmetic gaps (Phases 16-19) the user
   explicitly asked to implement together and review once at the end, rather than
   stopping for live confirmation after each one.
+- **Phase 17 — Paint (color-sketch) image source. Done, see [PHASE17.md](PHASE17.md).**
+  Closed the "no Sketch sub-tab" gap: an "Image source" toggle (Upload/Paint) lets
+  img2img's init image come from a `gr.Image(tool="color-sketch")` canvas instead of
+  an upload. Confirmed by reading `gradio/components/image.py` that `color-sketch`
+  (unlike `sketch`) is NOT split into an `{"image", "mask"}` dict, so it behaves as a
+  plain painted image independent of Phase 14's mask-drawing toggle. Both toggles now
+  share one visibility-computation function since they're orthogonal but both affect
+  `init_image`'s visibility. Verified by calling `run_img2img()` directly with
+  `init_image=None` and a synthetic painted image — succeeded only because the
+  override genuinely supplied the image (the function's own guard would otherwise
+  have rejected the missing init image).
 
 ## 7. Non-goals
 
