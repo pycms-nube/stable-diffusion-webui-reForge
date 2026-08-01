@@ -16,8 +16,14 @@ live progress + preview via Phase 5's SSE stream, using the existing force_task_
 field on the txt2img request so the frontend can pick its own task id up front and
 poll for it while the (blocking) POST runs in a background thread.
 
+Phase 10 (see PHASE10.md) added Interrupt/Skip controls (thin wrappers over
+/sdapi/v1/interrupt and /sdapi/v1/skip -- both fire-and-forget, no generation-state
+tracking needed here since shared.state lives entirely backend-side) and the batch
+count/size + restore faces/tiling params that were missing from the request payload
+even though the UI never exposed them.
+
 Scope, still honest: txt2img only, core params only. No img2img/other tabs, layout is
-flat (no accordion/category sectioning matching the shipped UI).
+flat (no accordion/category sectioning matching the shipped UI), no hires-fix.
 """
 import base64
 import functools
@@ -89,6 +95,28 @@ def build_alwayson_script_controls(backend_url):
     return script_controls
 
 
+def _post(backend_url, path, timeout=10):
+    r = requests.post(f"{backend_url}{path}", timeout=timeout)
+    r.raise_for_status()
+    return r
+
+
+def interrupt_generation(backend_url):
+    try:
+        _post(backend_url, "/sdapi/v1/interrupt")
+        return "Interrupt requested."
+    except requests.RequestException as e:
+        raise gr.Error(f"Interrupt request to {backend_url} failed: {e}") from e
+
+
+def skip_current_image(backend_url):
+    try:
+        _post(backend_url, "/sdapi/v1/skip")
+        return "Skip requested."
+    except requests.RequestException as e:
+        raise gr.Error(f"Skip request to {backend_url} failed: {e}") from e
+
+
 def _post_txt2img(backend_url, payload, result_box):
     try:
         r = requests.post(f"{backend_url}/sdapi/v1/txt2img", json=payload, timeout=600)
@@ -134,7 +162,8 @@ def _stream_progress(backend_url, id_task, result_box):
 
 
 def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampler_name,
-                 cfg_scale, width, height, seed, *script_arg_values):
+                 cfg_scale, width, height, seed, batch_count, batch_size, restore_faces,
+                 tiling, *script_arg_values):
     alwayson_scripts = {}
     idx = 0
     for name, count in script_specs:
@@ -151,6 +180,10 @@ def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampl
         "width": int(width),
         "height": int(height),
         "seed": int(seed),
+        "n_iter": int(batch_count),
+        "batch_size": int(batch_size),
+        "restore_faces": bool(restore_faces),
+        "tiling": bool(tiling),
         "force_task_id": id_task,
     }
     if alwayson_scripts:
@@ -179,11 +212,12 @@ def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampl
 
 
 def create_ui(backend_url=DEFAULT_BACKEND_URL):
-    with gr.Blocks(title="reForge -- frontend (torch-free proof, BFISO Phase 8/9)") as demo:
+    with gr.Blocks(title="reForge -- frontend (torch-free proof, BFISO Phase 8/9/10)") as demo:
         gr.Markdown(
             f"### Standalone frontend -- backend: `{backend_url}`\n"
-            "BFISO Phase 8/9 proof: this process has no torch installed. txt2img only; "
-            "script control values are sent with the request and progress streams live -- see PHASE9.md."
+            "BFISO Phase 8/9/10 proof: this process has no torch installed. txt2img only; "
+            "script control values are sent with the request, progress streams live, and "
+            "Interrupt/Skip are wired up -- see PHASE9.md / PHASE10.md."
         )
 
         with gr.Row():
@@ -200,6 +234,14 @@ def create_ui(backend_url=DEFAULT_BACKEND_URL):
                     height = gr.Slider(label="Height", minimum=64, maximum=2048, step=8, value=512)
 
                 with gr.Row():
+                    batch_count = gr.Slider(label="Batch count", minimum=1, maximum=50, step=1, value=1)
+                    batch_size = gr.Slider(label="Batch size", minimum=1, maximum=8, step=1, value=1)
+
+                with gr.Row():
+                    restore_faces = gr.Checkbox(label="Restore faces", value=False)
+                    tiling = gr.Checkbox(label="Tiling", value=False)
+
+                with gr.Row():
                     try:
                         sampler_choices = fetch_samplers(backend_url)
                     except RuntimeError as e:
@@ -214,7 +256,10 @@ def create_ui(backend_url=DEFAULT_BACKEND_URL):
                 script_specs = [(name, len(controls)) for name, controls in script_controls]
                 flat_script_inputs = [c for _name, controls in script_controls for c in controls]
 
-                generate_btn = gr.Button("Generate", variant="primary")
+                with gr.Row():
+                    generate_btn = gr.Button("Generate", variant="primary")
+                    skip_btn = gr.Button("Skip")
+                    interrupt_btn = gr.Button("Interrupt", variant="stop")
                 progress_box = gr.Textbox(label="Progress", interactive=False)
 
             with gr.Column(scale=5):
@@ -230,13 +275,21 @@ def create_ui(backend_url=DEFAULT_BACKEND_URL):
             # object rather than yielding, and Gradio silently expects a single
             # return value in that case (found by actually clicking Generate).
             fn=functools.partial(run_txt2img, backend_url, script_specs),
-            inputs=[prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height, seed, *flat_script_inputs],
+            inputs=[prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height, seed,
+                    batch_count, batch_size, restore_faces, tiling, *flat_script_inputs],
             outputs=[progress_box, preview_image, gallery, infotext_box],
         )
+        skip_btn.click(fn=functools.partial(skip_current_image, backend_url), outputs=[progress_box])
+        interrupt_btn.click(fn=functools.partial(interrupt_generation, backend_url), outputs=[progress_box])
 
     # Gradio 3.x requires an explicit queue to stream multiple yields from a
     # generator-based click handler back to the client -- without this,
     # run_txt2img's progress/preview yields fail with "Need to enable queue to use
-    # generators" (found by actually clicking Generate).
-    demo.queue()
+    # generators" (found by actually clicking Generate). concurrency_count defaults to
+    # 1, which serializes ALL queued events -- Skip/Interrupt clicks would queue up
+    # behind the still-running Generate generator and only fire once it already
+    # finished on its own, making both buttons silently no-op until the user found
+    # this by actually clicking them mid-generation. >=2 lets Skip/Interrupt jump the
+    # queue while Generate's handler is still yielding.
+    demo.queue(concurrency_count=3)
     return demo

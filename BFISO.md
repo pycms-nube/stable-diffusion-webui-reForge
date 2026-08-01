@@ -275,6 +275,21 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   `pytest test/test_txt2img.py test/test_img2img.py` (identical baseline to every prior
   phase). Torch-freedom verified by import inspection rather than a fresh from-scratch
   venv re-run this time (only stdlib additions: `functools`/`threading`/`time`/`uuid`).
+- **Phase 10 — Interrupt/Skip + missing core params. Done, see [PHASE10.md](PHASE10.md).**
+  Added Skip/Interrupt buttons (thin wrappers over the existing `/sdapi/v1/interrupt` /
+  `/sdapi/v1/skip` endpoints) and batch count/size + restore faces/tiling, all previously
+  missing from the request payload. Found and fixed a real bug the user caught by
+  clicking the buttons mid-generation: Gradio 3.41.2's `demo.queue()` defaults to
+  `concurrency_count=1`, which serializes all queued events through one slot — the
+  long-running Generate generator held that slot for the whole run, so Skip/Interrupt
+  clicks silently queued up behind it and only fired once generation had already
+  finished on its own. Fixed with `concurrency_count=3`. Verification methodology
+  changed deliberately after the Phase 9 OS crash: single one-shot `curl` checks for
+  anything that's a plain request/response (confirmed `restore_faces`/`tiling` reach the
+  pipeline via the real returned infotext), and live/dynamic behavior (does
+  Skip/Interrupt actually interrupt) handed to the user for manual browser confirmation
+  instead of automated rapid-polling loops, per the user's explicit request to avoid the
+  testing pattern that preceded the crash.
 
 ## 7. Non-goals
 
