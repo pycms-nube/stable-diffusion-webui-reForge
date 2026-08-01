@@ -381,6 +381,15 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   `init_image=None` and a synthetic painted image — succeeded only because the
   override genuinely supplied the image (the function's own guard would otherwise
   have rejected the missing init image).
+- **Phase 18 — Batch (multiple images). Done, see [PHASE18.md](PHASE18.md).** Closed
+  the "no Batch sub-tab" gap: upload several images and run the tab's current
+  prompt/steps/sampler/etc. settings against each via real `/sdapi/v1/img2img` calls,
+  looped client-side. Deliberately not the shipped UI's local `input_dir`/`output_dir`
+  approach — that only works when frontend and backend share a filesystem, which
+  BFISO's whole premise is to not require. Verified with synthetic file objects
+  shaped like Gradio's own `gr.File` output (`.name` attribute) against the real
+  backend: real progress ticks `0/2 → 1/2 → 2/2 → done`, 2 real result images
+  returned.
 
 ## 7. Non-goals
 

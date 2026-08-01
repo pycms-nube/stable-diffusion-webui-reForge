@@ -28,10 +28,20 @@ independent of mask handling. Only relevant when "Mask input" is "Upload mask
 separately" -- when "Draw mask on image" is selected, that mode already supplies its
 own base image via the mask-drawing canvas, so the Image-source toggle hides itself.
 
-Scope, honest: img2img with mask-upload or sketch-drawn inpainting, plus an
-Upload/Paint init image source toggle. No Batch sub-tab, no color-difference-based
+Phase 18 (PHASE18.md) added a Batch sub-section: upload multiple images, run the same
+generation settings (prompt/steps/sampler/etc. -- the same live components already on
+this tab, reused as extra inputs to a second click handler rather than duplicated)
+against each one in turn via real /sdapi/v1/img2img calls. The shipped UI's own
+"Batch" sub-tab processes a local input_dir/output_dir on the backend's filesystem --
+architecturally awkward for a frontend/backend that might not share a filesystem
+(the whole point of BFISO), so this uploads and loops instead, with no live progress
+mid-image (a plain "Processing N/M" message between calls, not the SSE preview
+Generate gets).
+
+Scope, honest: img2img with mask-upload or sketch-drawn inpainting, Upload/Paint init
+image source, and upload-multiple-images batch processing. No color-difference-based
 "Inpaint sketch" masking (distinct from plain color-sketch-as-source). See
-PHASE12.md / PHASE13.md / PHASE14.md / PHASE17.md for what's deferred.
+PHASE12.md / PHASE13.md / PHASE14.md / PHASE17.md / PHASE18.md for what's deferred.
 """
 import functools
 import json
@@ -40,6 +50,8 @@ import time
 import uuid
 
 import gradio as gr
+import requests
+from PIL import Image
 
 from modules_frontend.common import (
     build_alwayson_script_controls,
@@ -148,6 +160,57 @@ def run_img2img(backend_url, script_specs, init_image, mask_image, mask_source, 
     yield "done", None, images, infotext
 
 
+def run_batch_img2img(backend_url, script_specs, files, prompt, negative_prompt, steps, sampler_name,
+                      cfg_scale, width, height, seed, restore_faces, tiling, denoising_strength,
+                      resize_mode, *script_arg_values):
+    """Sequential, synchronous per-image /sdapi/v1/img2img calls -- no per-image live
+    progress (that's what Generate's SSE streaming is for), just a "Processing N/M"
+    message between calls. Reuses the same prompt/steps/sampler/etc. components
+    already on this tab as extra inputs rather than duplicating a whole second form."""
+    if not files:
+        raise gr.Error("Upload at least one image for batch processing.")
+
+    alwayson_scripts = {}
+    idx = 0
+    for name, count in script_specs:
+        alwayson_scripts[name] = {"args": list(script_arg_values[idx:idx + count])}
+        idx += count
+
+    total = len(files)
+    results = []
+    yield f"Processing 0/{total}...", results
+    for i, file_obj in enumerate(files, start=1):
+        image = Image.open(file_obj.name).convert("RGB")
+        payload = {
+            "init_images": [encode_image_to_base64(image)],
+            "resize_mode": int(resize_mode),
+            "denoising_strength": float(denoising_strength),
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "steps": int(steps),
+            "sampler_name": sampler_name,
+            "cfg_scale": float(cfg_scale),
+            "width": int(width),
+            "height": int(height),
+            "seed": int(seed),
+            "restore_faces": bool(restore_faces),
+            "tiling": bool(tiling),
+        }
+        if alwayson_scripts:
+            payload["alwayson_scripts"] = alwayson_scripts
+
+        try:
+            r = requests.post(f"{backend_url}/sdapi/v1/img2img", json=payload, timeout=600)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise gr.Error(f"Batch image {i}/{total} failed: {e}") from e
+
+        results.extend(decode_images(r.json().get("images", [])))
+        yield f"Processing {i}/{total}...", results
+
+    yield f"Batch done: {total} image(s) processed.", results
+
+
 def create_img2img_tab(backend_url):
     """Builds the img2img tab's contents into the enclosing gr.Blocks/gr.Tab context.
     Does not create its own Blocks or call .queue() -- modules_frontend/app.py owns
@@ -228,6 +291,18 @@ def create_img2img_tab(backend_url):
             script_specs = [(name, len(controls)) for name, controls in script_controls]
             flat_script_inputs = [c for _name, controls in script_controls for c in controls]
 
+            with gr.Accordion("Batch (multiple images)", open=False):
+                gr.Markdown(
+                    "Runs the current prompt/steps/sampler/etc. settings above against every "
+                    "uploaded image in turn via real /sdapi/v1/img2img calls -- no shared-filesystem "
+                    "input_dir/output_dir like the shipped UI's Batch sub-tab, since frontend and "
+                    "backend may not be on the same machine."
+                )
+                batch_files = gr.File(label="Images to process", file_count="multiple")
+                batch_run_btn = gr.Button("Run Batch")
+                batch_progress_box = gr.Textbox(label="Batch progress", interactive=False)
+                batch_gallery = gr.Gallery(label="Batch output", show_label=True, columns=2)
+
             progress_box = gr.Textbox(label="Progress", interactive=False)
             with gr.Row():
                 generate_btn = gr.Button("Generate", variant="primary")
@@ -253,4 +328,12 @@ def create_img2img_tab(backend_url):
                 mask_blur, inpainting_mask_invert, inpainting_fill, inpaint_full_res,
                 inpaint_full_res_padding, *flat_script_inputs],
         outputs=[progress_box, preview_image, gallery, infotext_box],
+    )
+    batch_run_btn.click(
+        # Same functools.partial-not-lambda reasoning as generate_btn.click above --
+        # run_batch_img2img is a generator too (PHASE9.md).
+        fn=functools.partial(run_batch_img2img, backend_url, script_specs),
+        inputs=[batch_files, prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height,
+                seed, restore_faces, tiling, denoising_strength, resize_mode, *flat_script_inputs],
+        outputs=[batch_progress_box, batch_gallery],
     )
