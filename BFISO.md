@@ -319,6 +319,20 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   (txt2img unaffected by the refactor, img2img's upload → Generate flow works
   end-to-end). Scoped down deliberately: basic img2img only, no inpainting (mask/mask
   blur/inpaint_full_res), no Sketch/Inpaint/Batch sub-tabs.
+- **Phase 13 — Mask-upload inpainting. Done, see [PHASE13.md](PHASE13.md).** Closed
+  Phase 12's named biggest remaining gap: a separate mask-image upload plus
+  `mask_blur`/`inpainting_mask_invert`/`inpainting_fill`/`inpaint_full_res`/
+  `inpaint_full_res_padding`, matching the shipped UI's own "Inpaint upload" sub-tab
+  semantics exactly (same Radio choice/index conventions as `modules/ui.py`). The
+  `mask` payload key is only added when a mask was actually uploaded, mirroring
+  `img2imgapi`'s own `if mask:` check, so plain (non-masked) img2img requests are
+  unaffected. Verified with a single one-shot `curl` request (synthetic init image +
+  mask) whose returned infotext showed `Mask blur`/`Inpaint area`/`Masked area
+  padding`, confirming inpainting genuinely activated rather than the mask being
+  silently dropped. User manually confirmed live: masked region changed, rest of the
+  image stayed close to the original. **Deliberately still no sketch-on-canvas mask
+  drawing** — this is upload-a-separate-mask-image only, not the shipped UI's
+  paint-directly-on-the-image workflow.
 
 ## 7. Non-goals
 

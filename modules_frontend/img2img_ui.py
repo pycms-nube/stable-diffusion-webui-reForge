@@ -6,9 +6,14 @@ progress-streaming/script-control helpers via modules_frontend/common.py. Torch-
 for the same reason as every other modules_frontend file: only gradio and
 modules_frontend.common.
 
-Scope, honest: basic img2img only -- a single init image, no inpainting (no mask, no
-mask blur, no inpaint_full_res). No Sketch/Inpaint/Inpaint upload/Batch sub-tabs the
-shipped UI has; just the plain img2img case. See PHASE12.md for what's deferred.
+Phase 13 (PHASE13.md) added inpainting: an optional separate mask-image upload plus
+mask_blur/inpainting_fill/inpaint_full_res/inpaint_full_res_padding/
+inpainting_mask_invert, matching the shipped UI's own "Inpaint upload" sub-tab
+semantics (a hand-drawn-sketch mask canvas is out of scope -- see PHASE13.md).
+
+Scope, honest: img2img with optional mask-image-upload inpainting. No sketch-on-canvas
+mask drawing, no Sketch/Inpaint-sketch/Batch sub-tabs the shipped UI has; just plain
+img2img and mask-upload inpainting. See PHASE12.md / PHASE13.md for what's deferred.
 """
 import functools
 import json
@@ -30,11 +35,15 @@ from modules_frontend.common import (
 )
 
 RESIZE_MODE_CHOICES = ["Just resize", "Crop and resize", "Resize and fill", "Just resize (latent upscale)"]
+MASKED_CONTENT_CHOICES = ["fill", "original", "latent noise", "latent nothing"]
+INPAINT_AREA_CHOICES = ["Whole picture", "Only masked"]
+MASK_MODE_CHOICES = ["Inpaint masked", "Inpaint not masked"]
 
 
-def run_img2img(backend_url, script_specs, init_image, prompt, negative_prompt, steps, sampler_name,
-                 cfg_scale, width, height, seed, batch_count, batch_size, restore_faces, tiling,
-                 denoising_strength, resize_mode, *script_arg_values):
+def run_img2img(backend_url, script_specs, init_image, mask_image, prompt, negative_prompt, steps,
+                 sampler_name, cfg_scale, width, height, seed, batch_count, batch_size, restore_faces,
+                 tiling, denoising_strength, resize_mode, mask_blur, inpainting_mask_invert,
+                 inpainting_fill, inpaint_full_res, inpaint_full_res_padding, *script_arg_values):
     if init_image is None:
         raise gr.Error("Upload an init image first.")
 
@@ -49,6 +58,11 @@ def run_img2img(backend_url, script_specs, init_image, prompt, negative_prompt, 
         "init_images": [encode_image_to_base64(init_image)],
         "resize_mode": int(resize_mode),
         "denoising_strength": float(denoising_strength),
+        "mask_blur": int(mask_blur),
+        "inpainting_mask_invert": int(inpainting_mask_invert),
+        "inpainting_fill": int(inpainting_fill),
+        "inpaint_full_res": bool(inpaint_full_res),
+        "inpaint_full_res_padding": int(inpaint_full_res_padding),
         "prompt": prompt,
         "negative_prompt": negative_prompt,
         "steps": int(steps),
@@ -63,6 +77,8 @@ def run_img2img(backend_url, script_specs, init_image, prompt, negative_prompt, 
         "tiling": bool(tiling),
         "force_task_id": id_task,
     }
+    if mask_image is not None:
+        payload["mask"] = encode_image_to_base64(mask_image)
     if alwayson_scripts:
         payload["alwayson_scripts"] = alwayson_scripts
 
@@ -96,6 +112,19 @@ def create_img2img_tab(backend_url):
             init_image = gr.Image(label="Init image", type="pil", source="upload")
             resize_mode = gr.Radio(label="Resize mode", choices=RESIZE_MODE_CHOICES,
                                     type="index", value=RESIZE_MODE_CHOICES[0])
+
+            with gr.Accordion("Inpainting", open=False):
+                mask_image = gr.Image(label="Mask (white = inpaint, upload separately -- no sketch canvas)",
+                                       type="pil", source="upload", image_mode="L")
+                mask_blur = gr.Slider(label="Mask blur", minimum=0, maximum=64, step=1, value=4)
+                inpainting_mask_invert = gr.Radio(label="Mask mode", choices=MASK_MODE_CHOICES,
+                                                   type="index", value=MASK_MODE_CHOICES[0])
+                inpainting_fill = gr.Radio(label="Masked content", choices=MASKED_CONTENT_CHOICES,
+                                            type="index", value="original")
+                inpaint_full_res = gr.Radio(label="Inpaint area", choices=INPAINT_AREA_CHOICES,
+                                             type="index", value=INPAINT_AREA_CHOICES[0])
+                inpaint_full_res_padding = gr.Slider(label="Only masked padding, pixels", minimum=0,
+                                                      maximum=256, step=4, value=32)
 
             prompt = gr.Textbox(label="Prompt", lines=3, placeholder="a photo of...")
             negative_prompt = gr.Textbox(label="Negative prompt", lines=2)
@@ -150,9 +179,10 @@ def create_img2img_tab(backend_url):
         # See txt2img_ui.py's identical comment: functools.partial, not a lambda, so
         # Gradio still detects run_img2img's `yield` through the wrapper (PHASE9.md).
         fn=functools.partial(run_img2img, backend_url, script_specs),
-        inputs=[init_image, prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height,
-                seed, batch_count, batch_size, restore_faces, tiling, denoising_strength, resize_mode,
-                *flat_script_inputs],
+        inputs=[init_image, mask_image, prompt, negative_prompt, steps, sampler_name, cfg_scale, width,
+                height, seed, batch_count, batch_size, restore_faces, tiling, denoising_strength,
+                resize_mode, mask_blur, inpainting_mask_invert, inpainting_fill, inpaint_full_res,
+                inpaint_full_res_padding, *flat_script_inputs],
         outputs=[progress_box, preview_image, gallery, infotext_box],
     )
     skip_btn.click(fn=functools.partial(skip_current_image, backend_url), outputs=[progress_box])
