@@ -303,6 +303,22 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   writing `"Hires steps"` into infotext when the value is truthy, which the shipped
   UI's own identically-defaulted-to-0 slider shares, so no fix was applied. No
   regression risk since no backend code changed.
+- **Phase 12 — Basic img2img tab. Done, see [PHASE12.md](PHASE12.md).** Added a second
+  pipeline alongside txt2img, structured as a `gr.Tabs()` layout. Extracted shared
+  helpers (sampler/upscaler/script-info fetching, progress SSE streaming, interrupt/
+  skip, image codec) into new `modules_frontend/common.py` so img2img didn't duplicate
+  txt2img's machinery; `txt2img_ui.py`'s `create_ui()` became `create_txt2img_tab()`
+  (no longer owns its own `gr.Blocks()`/`.queue()`), and new `modules_frontend/app.py`
+  assembles both tabs and owns the single queue. `build_alwayson_script_controls()`
+  generalized with an `is_img2img` flag instead of a hardcoded txt2img-only filter.
+  Verified the exact payload shape `run_img2img()` builds against the real
+  `/sdapi/v1/img2img` endpoint via a single one-shot `curl` check (tiny synthetic init
+  image, real infotext returned), confirmed `create_ui()` builds cleanly against the
+  live backend, re-confirmed torch-freedom by import inspection across all
+  `modules_frontend/*.py` files, and had the user manually confirm both tabs work live
+  (txt2img unaffected by the refactor, img2img's upload → Generate flow works
+  end-to-end). Scoped down deliberately: basic img2img only, no inpainting (mask/mask
+  blur/inpaint_full_res), no Sketch/Inpaint/Batch sub-tabs.
 
 ## 7. Non-goals
 

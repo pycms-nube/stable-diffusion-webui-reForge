@@ -24,7 +24,8 @@ import os
 # around argv ourselves. Must be set before any import that could trigger the chain.
 os.environ.setdefault("IGNORE_CMD_ARGS_ERRORS", "1")
 
-from modules_frontend.txt2img_ui import DEFAULT_BACKEND_URL, create_ui  # noqa: E402
+from modules_frontend.app import create_ui  # noqa: E402
+from modules_frontend.common import DEFAULT_BACKEND_URL  # noqa: E402
 
 
 def _patch_gradio_template_response():
