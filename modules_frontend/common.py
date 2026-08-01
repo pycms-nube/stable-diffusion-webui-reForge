@@ -4,6 +4,9 @@ BFISO Phase 12 -- helpers shared by txt2img_ui.py and img2img_ui.py.
 Extracted from txt2img_ui.py (Phase 8-11) when img2img_ui.py needed the same
 backend-fetch/progress-streaming/script-control machinery. Torch-free, same as every
 other module_frontend file -- only gradio, requests, PIL.
+
+Phase 16 (PHASE16.md) added build_confirm_action_button() -- a shared two-click
+confirm pattern for Skip/Interrupt, since Gradio 3.x has no built-in modal dialog.
 """
 import base64
 import io
@@ -134,6 +137,28 @@ def skip_current_image(backend_url):
         return "Skip requested."
     except requests.RequestException as e:
         raise gr.Error(f"Skip request to {backend_url} failed: {e}") from e
+
+
+def build_confirm_action_button(backend_url, label, action_fn, output_box, variant="secondary"):
+    """Two-click confirm pattern for a destructive action (Interrupt/Skip): the first
+    click arms the button and changes its own label to ask for confirmation instead of
+    acting immediately; a second click while armed actually calls
+    action_fn(backend_url) and disarms back to the original label. Builds AND wires
+    the button so callers don't need their own .click() boilerplate per button.
+
+    Gradio 3.x has no built-in modal confirm dialog, so this reuses the button itself
+    as the confirmation surface rather than adding a JS-level popup."""
+    armed = gr.State(False)
+    btn = gr.Button(label, variant=variant)
+
+    def on_click(is_armed):
+        if not is_armed:
+            return gr.update(value=f"Confirm {label}?"), True, gr.update()
+        message = action_fn(backend_url)
+        return gr.update(value=label), False, message
+
+    btn.click(fn=on_click, inputs=[armed], outputs=[btn, armed, output_box])
+    return btn
 
 
 def post_generate(backend_url, path, payload, result_box):

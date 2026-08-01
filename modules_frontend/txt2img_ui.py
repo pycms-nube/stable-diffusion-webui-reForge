@@ -42,6 +42,7 @@ import gradio as gr
 
 from modules_frontend.common import (
     build_alwayson_script_controls,
+    build_confirm_action_button,
     decode_images,
     fetch_hr_upscalers,
     fetch_samplers,
@@ -219,11 +220,15 @@ def create_txt2img_tab(backend_url):
             script_specs = [(name, len(controls)) for name, controls in script_controls]
             flat_script_inputs = [c for _name, controls in script_controls for c in controls]
 
+            progress_box = gr.Textbox(label="Progress", interactive=False)
             with gr.Row():
                 generate_btn = gr.Button("Generate", variant="primary")
-                skip_btn = gr.Button("Skip")
-                interrupt_btn = gr.Button("Interrupt", variant="stop")
-            progress_box = gr.Textbox(label="Progress", interactive=False)
+                # build_confirm_action_button() builds AND wires Skip/Interrupt itself
+                # (two-click confirm, PHASE16.md) -- progress_box must exist before
+                # this call since it's used as the confirm message's output target.
+                skip_btn = build_confirm_action_button(backend_url, "Skip", skip_current_image, progress_box)
+                interrupt_btn = build_confirm_action_button(backend_url, "Interrupt", interrupt_generation,
+                                                             progress_box, variant="stop")
 
         with gr.Column(scale=5):
             preview_image = gr.Image(label="Live preview", interactive=False)
@@ -244,5 +249,3 @@ def create_txt2img_tab(backend_url):
                 hr_cfg, *flat_script_inputs],
         outputs=[progress_box, preview_image, gallery, infotext_box],
     )
-    skip_btn.click(fn=functools.partial(skip_current_image, backend_url), outputs=[progress_box])
-    interrupt_btn.click(fn=functools.partial(interrupt_generation, backend_url), outputs=[progress_box])

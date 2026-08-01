@@ -361,6 +361,15 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   showed up correctly in the returned infotext) by calling `run_txt2img()` directly
   against the real backend. User manually confirmed the dropdowns populate with real
   data and a full sentinel-default generation completes successfully.
+- **Phase 16 — Two-click confirm for Skip/Interrupt. Done, see [PHASE16.md](PHASE16.md).**
+  Closed the "no cancel confirmation UX" gap. New
+  `modules_frontend/common.py::build_confirm_action_button()` builds and wires a
+  button implementing a two-click confirm pattern (arm on first click, relabel to
+  "Confirm X?", act on second) using only `gr.State` + the button's own label, since
+  Gradio 3.x has no built-in modal dialog. Both tabs' Skip/Interrupt now go through
+  this helper. Part of a batch of non-functional/cosmetic gaps (Phases 16-19) the user
+  explicitly asked to implement together and review once at the end, rather than
+  stopping for live confirmation after each one.
 
 ## 7. Non-goals
 
