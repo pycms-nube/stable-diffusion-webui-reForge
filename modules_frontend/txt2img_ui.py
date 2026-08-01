@@ -19,9 +19,18 @@ modules_frontend/img2img_ui.py could reuse them; create_ui() split into
 create_txt2img_tab() (this file, no longer owns its own gr.Blocks) assembled by the new
 modules_frontend/app.py alongside the new img2img tab.
 
-Scope, still honest: core params only, no advanced hires overrides
-(hr_checkpoint_name/hr_sampler_name/hr_scheduler/hr_prompt/hr_negative_prompt/hr_cfg),
-flat layout (no accordion/category sectioning matching the shipped UI).
+Phase 15 (PHASE15.md): the six advanced Hires. fix overrides (hr_checkpoint_name/
+hr_sampler_name/hr_scheduler/hr_prompt/hr_negative_prompt/hr_cfg). Unlike the REST
+API's *main* sampler_name/scheduler fields, hr_sampler_name/hr_scheduler get no
+"Use same X" sentinel-to-None normalization inside the API path (modules/api/api.py's
+text2imgapi) -- only the Gradio-only modules/txt2img.py::txt2img_create_processing()
+does that translation, and this module never goes through it. run_txt2img() replicates
+that translation client-side (see its own comment) so picking the sentinel default
+behaves identically to leaving these fields unset, rather than sending a literal
+"Use same sampler" string a sampler lookup would reject.
+
+Scope, still honest: flat layout (no accordion/category sectioning matching the
+shipped UI).
 """
 import functools
 import json
@@ -36,17 +45,25 @@ from modules_frontend.common import (
     decode_images,
     fetch_hr_upscalers,
     fetch_samplers,
+    fetch_sd_models,
+    fetch_schedulers,
     interrupt_generation,
     post_generate,
     skip_current_image,
     stream_progress,
 )
 
+HR_CHECKPOINT_SENTINEL = "Use same checkpoint"
+HR_SAMPLER_SENTINEL = "Use same sampler"
+HR_SCHEDULER_SENTINEL = "Use same scheduler"
+
 
 def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampler_name,
                  cfg_scale, width, height, seed, batch_count, batch_size, restore_faces,
                  tiling, enable_hr, hr_scale, hr_upscaler, hr_second_pass_steps,
-                 denoising_strength, hr_resize_x, hr_resize_y, *script_arg_values):
+                 denoising_strength, hr_resize_x, hr_resize_y, hr_checkpoint_name,
+                 hr_sampler_name, hr_scheduler, hr_prompt, hr_negative_prompt, hr_cfg,
+                 *script_arg_values):
     alwayson_scripts = {}
     idx = 0
     for name, count in script_specs:
@@ -74,6 +91,19 @@ def run_txt2img(backend_url, script_specs, prompt, negative_prompt, steps, sampl
         "denoising_strength": float(denoising_strength),
         "hr_resize_x": int(hr_resize_x),
         "hr_resize_y": int(hr_resize_y),
+        # The REST API path (modules/api/api.py::text2imgapi) does NOT translate the
+        # "Use same X" dropdown sentinels to None the way the Gradio-only
+        # modules/txt2img.py::txt2img_create_processing() does -- only that
+        # Gradio-path wrapper performs this conversion, and this frontend never goes
+        # through it. Replicate the translation here so the default (unchanged)
+        # dropdown value behaves as "use the base pass's value" instead of a literal
+        # sampler/scheduler lookup for a name that doesn't exist.
+        "hr_checkpoint_name": None if hr_checkpoint_name == HR_CHECKPOINT_SENTINEL else hr_checkpoint_name,
+        "hr_sampler_name": None if hr_sampler_name == HR_SAMPLER_SENTINEL else hr_sampler_name,
+        "hr_scheduler": None if hr_scheduler == HR_SCHEDULER_SENTINEL else hr_scheduler,
+        "hr_prompt": hr_prompt,
+        "hr_negative_prompt": hr_negative_prompt,
+        "hr_cfg": float(hr_cfg),
         "force_task_id": id_task,
     }
     if alwayson_scripts:
@@ -157,6 +187,33 @@ def create_txt2img_tab(backend_url):
                     hr_resize_x = gr.Number(label="Resize width to (0 = use Upscale by)", value=0, precision=0)
                     hr_resize_y = gr.Number(label="Resize height to (0 = use Upscale by)", value=0, precision=0)
 
+                with gr.Accordion("Advanced Hires. fix overrides", open=False):
+                    with gr.Row():
+                        try:
+                            hr_checkpoint_choices = [HR_CHECKPOINT_SENTINEL] + fetch_sd_models(backend_url)
+                        except RuntimeError as e:
+                            hr_checkpoint_choices = [HR_CHECKPOINT_SENTINEL]
+                            gr.Markdown(f"⚠️ {e}")
+                        hr_checkpoint_name = gr.Dropdown(label="Hires checkpoint", choices=hr_checkpoint_choices,
+                                                          value=HR_CHECKPOINT_SENTINEL)
+                        hr_sampler_name = gr.Dropdown(label="Hires sampling method",
+                                                       choices=[HR_SAMPLER_SENTINEL] + sampler_choices,
+                                                       value=HR_SAMPLER_SENTINEL)
+                    with gr.Row():
+                        try:
+                            hr_scheduler_choices = [HR_SCHEDULER_SENTINEL] + fetch_schedulers(backend_url)
+                        except RuntimeError as e:
+                            hr_scheduler_choices = [HR_SCHEDULER_SENTINEL]
+                            gr.Markdown(f"⚠️ {e}")
+                        hr_scheduler = gr.Dropdown(label="Hires schedule type", choices=hr_scheduler_choices,
+                                                    value=HR_SCHEDULER_SENTINEL)
+                        hr_cfg = gr.Slider(label="Hires CFG Scale", minimum=0.0, maximum=30.0, step=0.1, value=0.0)
+                    hr_prompt = gr.Textbox(label="Hires prompt", lines=2,
+                                            placeholder="Leave empty to use the same prompt as the base pass.")
+                    hr_negative_prompt = gr.Textbox(label="Hires negative prompt", lines=2,
+                                                     placeholder="Leave empty to use the same negative "
+                                                                  "prompt as the base pass.")
+
             with gr.Accordion("Scripts", open=False):
                 script_controls = build_alwayson_script_controls(backend_url, is_img2img=False)
             script_specs = [(name, len(controls)) for name, controls in script_controls]
@@ -183,7 +240,8 @@ def create_txt2img_tab(backend_url):
         inputs=[prompt, negative_prompt, steps, sampler_name, cfg_scale, width, height, seed,
                 batch_count, batch_size, restore_faces, tiling, enable_hr, hr_scale, hr_upscaler,
                 hr_second_pass_steps, denoising_strength, hr_resize_x, hr_resize_y,
-                *flat_script_inputs],
+                hr_checkpoint_name, hr_sampler_name, hr_scheduler, hr_prompt, hr_negative_prompt,
+                hr_cfg, *flat_script_inputs],
         outputs=[progress_box, preview_image, gallery, infotext_box],
     )
     skip_btn.click(fn=functools.partial(skip_current_image, backend_url), outputs=[progress_box])

@@ -345,6 +345,22 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   synthetic dict matching Gradio's documented format (real backend call, real infotext
   confirming inpainting activated), while the actual "does drawing work" question was
   handed to the user, who confirmed it live.
+- **Phase 15 — Advanced Hires. fix overrides. Done, see [PHASE15.md](PHASE15.md).**
+  Added `hr_checkpoint_name`/`hr_sampler_name`/`hr_scheduler`/`hr_prompt`/
+  `hr_negative_prompt`/`hr_cfg`, tucked into a nested sub-accordion. Found (by reading
+  the actual REST API code path this frontend uses, before writing the payload logic,
+  not by hitting the bug live) that the shipped Gradio UI's "Use same X" sentinel
+  strings only get translated to `None` inside the Gradio-only
+  `modules/txt2img.py::txt2img_create_processing()` — `modules/api/api.py`'s
+  `text2imgapi` REST path this frontend calls does no such translation, so sending the
+  literal sentinel text would have looked up a sampler/scheduler literally named "Use
+  same sampler"/"Use same scheduler" and failed. `run_txt2img()` replicates that
+  translation client-side. Verified both the sentinel-default path (completes
+  successfully, infotext shows the base pass's own CFG as the effective hires CFG) and
+  an explicit-override path (`hr_sampler_name`/`hr_scheduler`/`hr_prompt`/`hr_cfg` all
+  showed up correctly in the returned infotext) by calling `run_txt2img()` directly
+  against the real backend. User manually confirmed the dropdowns populate with real
+  data and a full sentinel-default generation completes successfully.
 
 ## 7. Non-goals
 

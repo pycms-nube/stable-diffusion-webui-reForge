@@ -49,6 +49,28 @@ def fetch_hr_upscalers(backend_url):
     return latent_modes + upscalers
 
 
+def fetch_sd_models(backend_url):
+    """Titles, not model_name/filename -- sd_models.get_closet_checkpoint_match()
+    (modules/processing.py, used for hr_checkpoint_name resolution) fuzzy-matches
+    against a checkpoint's title first."""
+    try:
+        return [m["title"] for m in _get(backend_url, "/sdapi/v1/sd-models")]
+    except requests.RequestException as e:
+        raise RuntimeError(f"Could not reach backend at {backend_url} for /sdapi/v1/sd-models: {e}") from e
+
+
+def fetch_schedulers(backend_url):
+    """Labels, not names -- the shipped UI's own hr_scheduler dropdown
+    (modules/ui.py:343) sends x.label, and hr_scheduler is stored verbatim (no
+    label/name normalization happens for the *hires* scheduler override the way it
+    does for the base txt2img `scheduler` field), so matching that exact convention
+    keeps this frontend's requests resolvable the same way the shipped UI's are."""
+    try:
+        return [s["label"] for s in _get(backend_url, "/sdapi/v1/schedulers")]
+    except requests.RequestException as e:
+        raise RuntimeError(f"Could not reach backend at {backend_url} for /sdapi/v1/schedulers: {e}") from e
+
+
 def fetch_script_info(backend_url):
     try:
         return _get(backend_url, "/sdapi/v1/script-info")
