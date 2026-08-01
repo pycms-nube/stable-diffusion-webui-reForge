@@ -9,11 +9,18 @@ modules_frontend.common.
 Phase 13 (PHASE13.md) added inpainting: an optional separate mask-image upload plus
 mask_blur/inpainting_fill/inpaint_full_res/inpaint_full_res_padding/
 inpainting_mask_invert, matching the shipped UI's own "Inpaint upload" sub-tab
-semantics (a hand-drawn-sketch mask canvas is out of scope -- see PHASE13.md).
+semantics.
 
-Scope, honest: img2img with optional mask-image-upload inpainting. No sketch-on-canvas
-mask drawing, no Sketch/Inpaint-sketch/Batch sub-tabs the shipped UI has; just plain
-img2img and mask-upload inpainting. See PHASE12.md / PHASE13.md for what's deferred.
+Phase 14 (PHASE14.md) added the other half: sketch-on-canvas mask drawing, matching
+the shipped UI's "Inpaint" sub-tab. A "Mask input" toggle switches between Phase 13's
+separate-upload mode and a single gr.Image(tool="sketch") where the mask is drawn
+directly over the uploaded image -- Gradio's own preprocessing (gradio/components/
+image.py Image.preprocess) already splits that into {"image": ..., "mask": ...} PIL
+images before it reaches this module, so no manual canvas decoding was needed.
+
+Scope, honest: img2img with mask-upload or sketch-drawn inpainting. No Sketch
+(color-sketch-as-img2img-source, distinct from inpaint sketch)/Batch sub-tabs the
+shipped UI has. See PHASE12.md / PHASE13.md / PHASE14.md for what's deferred.
 """
 import functools
 import json
@@ -38,12 +45,19 @@ RESIZE_MODE_CHOICES = ["Just resize", "Crop and resize", "Resize and fill", "Jus
 MASKED_CONTENT_CHOICES = ["fill", "original", "latent noise", "latent nothing"]
 INPAINT_AREA_CHOICES = ["Whole picture", "Only masked"]
 MASK_MODE_CHOICES = ["Inpaint masked", "Inpaint not masked"]
+MASK_SOURCE_CHOICES = ["Upload mask separately", "Draw mask on image"]
 
 
-def run_img2img(backend_url, script_specs, init_image, mask_image, prompt, negative_prompt, steps,
-                 sampler_name, cfg_scale, width, height, seed, batch_count, batch_size, restore_faces,
-                 tiling, denoising_strength, resize_mode, mask_blur, inpainting_mask_invert,
-                 inpainting_fill, inpaint_full_res, inpaint_full_res_padding, *script_arg_values):
+def run_img2img(backend_url, script_specs, init_image, mask_image, mask_source, sketch_value, prompt,
+                 negative_prompt, steps, sampler_name, cfg_scale, width, height, seed, batch_count,
+                 batch_size, restore_faces, tiling, denoising_strength, resize_mode, mask_blur,
+                 inpainting_mask_invert, inpainting_fill, inpaint_full_res, inpaint_full_res_padding,
+                 *script_arg_values):
+    if mask_source == 1:  # "Draw mask on image"
+        if sketch_value is None:
+            raise gr.Error("Draw a mask on the image first.")
+        init_image, mask_image = sketch_value["image"], sketch_value["mask"]
+
     if init_image is None:
         raise gr.Error("Upload an init image first.")
 
@@ -114,8 +128,19 @@ def create_img2img_tab(backend_url):
                                     type="index", value=RESIZE_MODE_CHOICES[0])
 
             with gr.Accordion("Inpainting", open=False):
-                mask_image = gr.Image(label="Mask (white = inpaint, upload separately -- no sketch canvas)",
-                                       type="pil", source="upload", image_mode="L")
+                mask_source = gr.Radio(label="Mask input", choices=MASK_SOURCE_CHOICES,
+                                        type="index", value=MASK_SOURCE_CHOICES[0])
+                with gr.Group(visible=True) as mask_upload_group:
+                    mask_image = gr.Image(label="Mask (white = inpaint)", type="pil",
+                                           source="upload", image_mode="L")
+                sketch_canvas = gr.Image(label="Draw mask directly on the image", type="pil",
+                                          source="upload", tool="sketch", visible=False)
+                mask_source.change(
+                    fn=lambda mode: (gr.update(visible=mode == 0), gr.update(visible=mode == 1),
+                                      gr.update(visible=mode == 0)),
+                    inputs=[mask_source],
+                    outputs=[mask_upload_group, sketch_canvas, init_image],
+                )
                 mask_blur = gr.Slider(label="Mask blur", minimum=0, maximum=64, step=1, value=4)
                 inpainting_mask_invert = gr.Radio(label="Mask mode", choices=MASK_MODE_CHOICES,
                                                    type="index", value=MASK_MODE_CHOICES[0])
@@ -179,10 +204,10 @@ def create_img2img_tab(backend_url):
         # See txt2img_ui.py's identical comment: functools.partial, not a lambda, so
         # Gradio still detects run_img2img's `yield` through the wrapper (PHASE9.md).
         fn=functools.partial(run_img2img, backend_url, script_specs),
-        inputs=[init_image, mask_image, prompt, negative_prompt, steps, sampler_name, cfg_scale, width,
-                height, seed, batch_count, batch_size, restore_faces, tiling, denoising_strength,
-                resize_mode, mask_blur, inpainting_mask_invert, inpainting_fill, inpaint_full_res,
-                inpaint_full_res_padding, *flat_script_inputs],
+        inputs=[init_image, mask_image, mask_source, sketch_canvas, prompt, negative_prompt, steps,
+                sampler_name, cfg_scale, width, height, seed, batch_count, batch_size, restore_faces,
+                tiling, denoising_strength, resize_mode, mask_blur, inpainting_mask_invert,
+                inpainting_fill, inpaint_full_res, inpaint_full_res_padding, *flat_script_inputs],
         outputs=[progress_box, preview_image, gallery, infotext_box],
     )
     skip_btn.click(fn=functools.partial(skip_current_image, backend_url), outputs=[progress_box])

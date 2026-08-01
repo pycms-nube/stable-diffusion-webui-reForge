@@ -333,6 +333,18 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   image stayed close to the original. **Deliberately still no sketch-on-canvas mask
   drawing** — this is upload-a-separate-mask-image only, not the shipped UI's
   paint-directly-on-the-image workflow.
+- **Phase 14 — Sketch-on-canvas mask drawing. Done, see [PHASE14.md](PHASE14.md).**
+  Closed Phase 13's remaining gap: a "Mask input" toggle switches between the
+  separate-upload mode and a single `gr.Image(tool="sketch")` where the mask is drawn
+  directly over the image, matching the shipped UI's "Inpaint" sub-tab. Confirmed by
+  reading Gradio's own `Image.preprocess()` that `tool="sketch"` + `type="pil"` already
+  splits the canvas into `{"image": ..., "mask": ...}` PIL images before reaching this
+  code — no manual canvas decoding needed. Since drawing on a canvas isn't automatable
+  through this session's tools, verification split cleanly: the dict-unpacking and
+  payload-building logic was tested by calling `run_img2img()` directly with a
+  synthetic dict matching Gradio's documented format (real backend call, real infotext
+  confirming inpainting activated), while the actual "does drawing work" question was
+  handed to the user, who confirmed it live.
 
 ## 7. Non-goals
 
