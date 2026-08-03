@@ -400,6 +400,26 @@ All three were investigated; see [PHASE0.md](PHASE0.md) for full evidence and ci
   (unsurprising, since no backend/request-payload logic changed). Closes out the
   Phase 16-19 batch of non-functional/cosmetic gaps the user asked to implement
   together and review once at the end, rather than after each individual phase.
+- **Phase 20 — Combined launch script. Done, see [PHASE20.md](PHASE20.md).** First
+  concrete step toward the user's longer-term goal of eventually replacing the
+  current single-process implementation (so future Gradio/backend upgrades are
+  easier) — specifically the piece they chose when asked to prioritize: launch
+  integration, not new feature coverage. New `webui-split.sh` backgrounds
+  `webui-backend.sh`, polls `/sdapi/v1/samplers` until healthy, then backgrounds
+  `webui-frontend.sh` against it, with a trap tearing both down on exit.
+  `FRONTEND_BACKEND_URL` tracks a custom `BACKEND_PORT` automatically. Verified with
+  a real cold start (real SDXL checkpoint load, health-check loop succeeding, both
+  processes reachable). Found and honestly reported a real signal-handling nuance
+  while testing shutdown: `SIGTERM` cleanup is directly proven (both children die,
+  "Shutting down..." logged); `SIGINT` did NOT fire cleanup in this specific test,
+  traced to bash's rule that asynchronous (`&`-launched) commands from a
+  non-interactive shell force SIGINT to be ignored — an artifact of how this
+  sandboxed environment (no TTY) had to launch the script for testing, not of a real
+  user running it in the foreground of their own terminal, where that rule doesn't
+  apply. Documented as an open item to manually confirm rather than silently assumed
+  or overclaimed. Explicitly NOT a step toward feature parity — Settings, Extras,
+  PNG Info, Train, and extension UI remain exclusively on the original `webui.sh`
+  path; `webui.sh` itself untouched per its own no-modify convention.
 
 ## 7. Non-goals
 
