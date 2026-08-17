@@ -72,3 +72,4 @@ CLAUDE.md
 .claude/settings.local.json
 embeddings
 .obsidian/
+/jax_pipeline/.cache/
