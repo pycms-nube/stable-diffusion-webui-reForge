@@ -31,5 +31,5 @@ tomesd
 torch
 torchdiffeq
 torchsde
-transformers==4.44.0
+transformers==5.10.2
 pillow-avif-plugin==1.4.3
