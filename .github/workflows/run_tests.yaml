@@ -26,7 +26,7 @@ jobs:
             launch.py
       - name: Cache models
         id: cache-models
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: models
           key: "2023-12-30"
