@@ -102,7 +102,7 @@ jobs:
         # Use || true so a connection-refused (server never started) doesn't fail CI
         run: curl -sf -XPOST http://127.0.0.1:7860/sdapi/v1/server-stop && sleep 10 || true
       - name: Upload main app output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: output
