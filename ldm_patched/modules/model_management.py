@@ -1158,6 +1158,17 @@ def sage_attention3_enabled():
 def flash_attention_enabled():
     return args.use_flash_attention
 
+def comfy_kitchen_attention_enabled():
+    return getattr(args, "use_ck_attention", False)
+
+def comfy_kitchen_triton_backend_enabled():
+    # None = let comfy_kitchen auto-detect; True/False = explicit override.
+    if getattr(args, "enable_triton_backend", False):
+        return True
+    if getattr(args, "disable_triton_backend", False):
+        return False
+    return None
+
 def xformers_enabled():
     global directml_enabled
     global cpu_state

@@ -3,6 +3,7 @@ import contextlib
 import os
 from ldm_patched.modules import model_management
 from ldm_patched.modules import model_detection
+from ldm_patched.modules import supported_models
 
 from ldm_patched.modules.sd import VAE, CLIP
 import ldm_patched.modules.model_patcher
@@ -279,6 +280,22 @@ def load_state_dict_guess_config(sd, output_vae=True, output_clip=True, output_c
 
     if output_model:
         inital_load_device = model_management.unet_inital_load_device(parameters, unet_dtype)
+        if getattr(cmd_opts, 'forge_jax_pipeline', False) and isinstance(model_config, supported_models.SDXL):
+            # jax_pipeline (see modules_forge/forge_loader.py's own
+            # maybe_activate() call below) builds its own independent
+            # JAX-side copy of this UNet by reading its state_dict() once
+            # activation happens — state_dict() returns identical tensors
+            # regardless of which device they currently live on, so there
+            # is no need to eagerly materialize the torch copy on GPU only
+            # to have jax_pipeline read it and then evict it moments
+            # later (see host_offload.evict_torch_unet_from_gpu). Loading
+            # it to CPU here means the `inital_load_device != cpu` check
+            # below naturally skips the eager full GPU load entirely;
+            # forge's own sampling_prepare() still loads it on demand for
+            # the first real generation, same as it would for any other
+            # backend — this only removes the redundant, otherwise-wasted
+            # load-then-evict round trip at checkpoint-load time.
+            inital_load_device = torch.device("cpu")
         model = model_config.get_model(sd, diffusion_model_prefix, device=inital_load_device)
         model.load_model_weights(sd, diffusion_model_prefix)
 
@@ -585,6 +602,31 @@ def load_model_for_a1111(timer, checkpoint_info=None, state_dict=None):
                 )
         except Exception:
             pass  # never let the warning itself crash startup
+
+    # ── JAX pipeline (opt-in via --forge-jax-pipeline) ──────────────────────────
+    # Off by default — unlike MLX (which targets otherwise-unsupported Apple
+    # Silicon hardware), JAX would compete with an already-working CUDA/ROCm
+    # PyTorch path, so it only activates when explicitly requested.
+    if getattr(cmd_opts, 'forge_jax_pipeline', False):
+        try:
+            import jax_pipeline as _jaxp
+            _jax_activated = _jaxp.maybe_activate(sd_model, forge_objects)
+            if not _jax_activated:
+                print(
+                    "\n"
+                    "[JAX Pipeline] --forge-jax-pipeline was set but activation did not "
+                    "succeed (see log above). Falling back to the standard PyTorch pipeline. "
+                    "Install jax with: pip install -r requirements_jax.txt\n"
+                )
+        except Exception as _jax_err:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "[JAX Pipeline] Skipped: %s", _jax_err
+            )
+            print(
+                f"\n[JAX Pipeline] --forge-jax-pipeline was set but activation raised "
+                f"({_jax_err}). Falling back to the standard PyTorch pipeline.\n"
+            )
 
     sd_model.sd_model_hash = sd_model_hash
     sd_model.sd_model_checkpoint = checkpoint_info.filename
