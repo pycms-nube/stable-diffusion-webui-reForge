@@ -67,7 +67,15 @@ def save_pil_to_file(self, pil_image, dir=None, format="png"):
 
 def install_ui_tempdir_override():
     """override save to file function so that it also writes PNG info"""
-    gradio.components.IOComponent.pil_to_temp_file = save_pil_to_file
+    # Gradio 4.0 removed the IOComponent.pil_to_temp_file hook entirely (private API eliminated in
+    # the 4.0 component-protocol rework; see docs/gradio_api_usage_audit.md P8). There is no direct
+    # replacement monkeypatch point at 4.44.1 -- components now call processing_utils.save_pil_to_cache
+    # per-instance via a cache_dir on the component, not a shared class-level hook. Guard this so
+    # import does not crash; PNG-metadata preservation on temp-saved images is a known regression
+    # pending a proper Gradio-4-native reimplementation (flagged for manual UI verification).
+    io_component = getattr(gradio.components, 'IOComponent', None)
+    if io_component is not None and hasattr(io_component, 'pil_to_temp_file'):
+        io_component.pil_to_temp_file = save_pil_to_file
 
 
 def on_tmpdir_changed():

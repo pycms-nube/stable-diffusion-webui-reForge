@@ -37,7 +37,11 @@ create_setting_component = ui_settings.create_setting_component
 
 def _configure_warnings():
     warnings.filterwarnings("default" if shared.opts.show_warnings else "ignore", category=UserWarning)
-    warnings.filterwarnings("default" if shared.opts.show_gradio_deprecation_warnings else "ignore", category=gr.deprecation.GradioDeprecationWarning)
+    # Gradio 4.0 removed the gradio.deprecation module entirely (GradioDeprecationWarning no longer
+    # exists); guard the filter so this doesn't raise AttributeError on newer gradio.
+    deprecation_warning_cls = getattr(getattr(gr, "deprecation", None), "GradioDeprecationWarning", None)
+    if deprecation_warning_cls is not None:
+        warnings.filterwarnings("default" if shared.opts.show_gradio_deprecation_warnings else "ignore", category=deprecation_warning_cls)
 
 script_callbacks.on_before_ui(_configure_warnings)
 
@@ -54,8 +58,12 @@ mimetypes.add_type('text/css', '.css')
 
 if not cmd_opts.share and not cmd_opts.listen:
     # fix gradio phoning home
-    gradio.utils.version_check = lambda: None
-    gradio.utils.get_local_ip_address = lambda: '127.0.0.1'
+    # Gradio 4.0+ reorganized gradio.utils internals; version_check/get_local_ip_address may no
+    # longer exist at this module path. Patch defensively so this doesn't raise AttributeError.
+    if hasattr(gradio.utils, 'version_check'):
+        gradio.utils.version_check = lambda: None
+    if hasattr(gradio.utils, 'get_local_ip_address'):
+        gradio.utils.get_local_ip_address = lambda: '127.0.0.1'
 
 if cmd_opts.ngrok is not None:
     import modules.ngrok as ngrok
@@ -251,7 +259,7 @@ def create_override_settings_dropdown(tabname, row) -> gr.Dropdown:
     dropdown = gr.Dropdown([], label="Override settings", visible=False, elem_id=f"{tabname}_override_settings", multiselect=True)
 
     dropdown.change(
-        fn=lambda x: gr.Dropdown.update(visible=bool(x)),
+        fn=lambda x: gr.update(visible=bool(x)),
         inputs=[dropdown],
         outputs=[dropdown],
     )
@@ -384,7 +392,7 @@ def create_ui() -> gr.Blocks:
                 )
                 event(
                     None,
-                    _js="onCalcResolutionHires",
+                    js="onCalcResolutionHires",
                     inputs=hr_resolution_preview_inputs,
                     outputs=[],
                     show_progress=False,
@@ -427,7 +435,7 @@ def create_ui() -> gr.Blocks:
 
             txt2img_args: dict[str, list[None] | bool] = dict(
                 fn=wrap_gradio_gpu_call(modules.txt2img.txt2img, extra_outputs=[None, '', '']),
-                _js="submit",
+                js="submit",
                 inputs=txt2img_inputs,
                 outputs=txt2img_outputs,
                 show_progress=False,
@@ -438,7 +446,7 @@ def create_ui() -> gr.Blocks:
 
             output_panel.button_upscale.click(
                 fn=wrap_gradio_gpu_call(modules.txt2img.txt2img_upscale, extra_outputs=[None, '', '']),
-                _js="submit_txt2img_upscale",
+                js="submit_txt2img_upscale",
                 inputs=txt2img_inputs[0:1] + [output_panel.gallery, dummy_component, output_panel.generation_info] + txt2img_inputs[1:],
                 outputs=txt2img_outputs,
                 show_progress=False,
@@ -448,7 +456,7 @@ def create_ui() -> gr.Blocks:
 
             toprow.restore_progress_button.click(
                 fn=progress.restore_progress,
-                _js="restoreProgressTxt2img",
+                js="restoreProgressTxt2img",
                 inputs=[dummy_component],
                 outputs=[
                     output_panel.gallery,
@@ -556,24 +564,32 @@ def create_ui() -> gr.Blocks:
                             img2img_selected_tab = gr.Number(value=0, visible=False)
 
                             with gr.TabItem('img2img', id='img2img', elem_id="img2img_img2img_tab") as tab_img2img:
-                                init_img = gr.Image(label="Image for img2img", elem_id="img2img_image", show_label=False, source="upload", interactive=True, type="pil", tool="editor", image_mode="RGBA", height=shared.opts.img2img_editor_height)
+                                # Gradio 4.0: gr.Image's tool="editor" kwarg was removed; gr.ImageEditor is the
+                                # replacement. No brush/layers needed here (old "editor" tool was crop-only), so
+                                # they're disabled to keep behavior as close as possible to the pre-migration UI.
+                                # NOTE: downstream consumption in modules/img2img.py now reads the "composite" key.
+                                init_img = gr.ImageEditor(label="Image for img2img", elem_id="img2img_image", show_label=False, sources=["upload"], interactive=True, type="pil", image_mode="RGBA", brush=False, eraser=False, layers=False, height=shared.opts.img2img_editor_height)
                                 add_copy_image_controls('img2img', init_img)
 
                             with gr.TabItem('Sketch', id='img2img_sketch', elem_id="img2img_img2img_sketch_tab") as tab_sketch:
-                                sketch = gr.Image(label="Image for img2img", elem_id="img2img_sketch", show_label=False, source="upload", interactive=True, type="pil", tool="color-sketch", image_mode="RGB", height=shared.opts.img2img_editor_height, brush_color=shared.opts.img2img_sketch_default_brush_color)
+                                sketch = gr.ImageEditor(label="Image for img2img", elem_id="img2img_sketch", show_label=False, sources=["upload"], interactive=True, type="pil", image_mode="RGB", brush=gr.Brush(colors=[shared.opts.img2img_sketch_default_brush_color], color_mode="fixed"), eraser=False, layers=False, height=shared.opts.img2img_editor_height)
                                 add_copy_image_controls('sketch', sketch)
 
                             with gr.TabItem('Inpaint', id='inpaint', elem_id="img2img_inpaint_tab") as tab_inpaint:
-                                init_img_with_mask = gr.Image(label="Image for inpainting with mask", show_label=False, elem_id="img2maskimg", source="upload", interactive=True, type="pil", tool="sketch", image_mode="RGBA", height=shared.opts.img2img_editor_height, brush_color=shared.opts.img2img_inpaint_mask_brush_color)
+                                # Old gr.Image(tool="sketch") returned {"image": ..., "mask": ...}; gr.ImageEditor
+                                # returns {"background": ..., "layers": [...], "composite": ...}. The drawn mask is
+                                # reconstructed from layers[0]'s alpha channel in modules/img2img.py.
+                                init_img_with_mask = gr.ImageEditor(label="Image for inpainting with mask", show_label=False, elem_id="img2maskimg", sources=["upload"], interactive=True, type="pil", image_mode="RGBA", brush=gr.Brush(colors=[shared.opts.img2img_inpaint_mask_brush_color], color_mode="fixed"), eraser=False, layers=False, height=shared.opts.img2img_editor_height)
                                 add_copy_image_controls('inpaint', init_img_with_mask)
 
                             with gr.TabItem('Inpaint sketch', id='inpaint_sketch', elem_id="img2img_inpaint_sketch_tab") as tab_inpaint_color:
-                                inpaint_color_sketch = gr.Image(label="Color sketch inpainting", show_label=False, elem_id="inpaint_sketch", source="upload", interactive=True, type="pil", tool="color-sketch", image_mode="RGB", height=shared.opts.img2img_editor_height, brush_color=shared.opts.img2img_inpaint_sketch_default_brush_color)
+                                inpaint_color_sketch = gr.ImageEditor(label="Color sketch inpainting", show_label=False, elem_id="inpaint_sketch", sources=["upload"], interactive=True, type="pil", image_mode="RGB", brush=gr.Brush(colors=[shared.opts.img2img_inpaint_sketch_default_brush_color], color_mode="fixed"), eraser=False, layers=False, height=shared.opts.img2img_editor_height)
                                 inpaint_color_sketch_orig = gr.State(None)
                                 add_copy_image_controls('inpaint_sketch', inpaint_color_sketch)
 
                                 def update_orig(image, state):
                                     if image is not None:
+                                        image = image["composite"] if isinstance(image, dict) else image
                                         same_size = state is not None and state.size == image.size
                                         has_exact_match: np.bool[bool] = np.any(np.all(np.array(image) == np.array(state), axis=-1))
                                         edited = same_size and has_exact_match
@@ -582,8 +598,8 @@ def create_ui() -> gr.Blocks:
                                 inpaint_color_sketch.change(update_orig, [inpaint_color_sketch, inpaint_color_sketch_orig], inpaint_color_sketch_orig)
 
                             with gr.TabItem('Inpaint upload', id='inpaint_upload', elem_id="img2img_inpaint_upload_tab") as tab_inpaint_upload:
-                                init_img_inpaint = gr.Image(label="Image for img2img", show_label=False, source="upload", interactive=True, type="pil", elem_id="img_inpaint_base")
-                                init_mask_inpaint = gr.Image(label="Mask", source="upload", interactive=True, type="pil", image_mode="RGBA", elem_id="img_inpaint_mask")
+                                init_img_inpaint = gr.Image(label="Image for img2img", show_label=False, sources=["upload"], interactive=True, type="pil", elem_id="img_inpaint_base")
+                                init_mask_inpaint = gr.Image(label="Mask", sources=["upload"], interactive=True, type="pil", image_mode="RGBA", elem_id="img_inpaint_mask")
 
                             with gr.TabItem('Batch', id='batch', elem_id="img2img_batch_tab") as tab_batch:
                                 hidden: str = '<br>Disabled when launched with --hide-ui-dir-config.' if shared.cmd_opts.hide_ui_dir_config else ''
@@ -620,7 +636,7 @@ def create_ui() -> gr.Blocks:
                             )
                             button.click(
                                 fn=lambda: None,
-                                _js=f"switch_to_{name.replace(' ', '_')}",
+                                js=f"switch_to_{name.replace(' ', '_')}",
                                 inputs=[],
                                 outputs=[],
                             )
@@ -653,7 +669,7 @@ def create_ui() -> gr.Blocks:
 
                                     on_change_args = dict(
                                         fn=resize_from_to_html,
-                                        _js="currentImg2imgSourceResolution",
+                                        js="currentImg2imgSourceResolution",
                                         inputs=[dummy_component, dummy_component, scale_by],
                                         outputs=scale_by_html,
                                         show_progress=False,
@@ -726,7 +742,7 @@ def create_ui() -> gr.Blocks:
             # as it is now the event keeps firing continuously for inpaint edits, which ruins the page with constant requests.
             # I assume this must be a gradio bug and for now we'll just do it for non-inpaint inputs.
             for component in [init_img, sketch]:
-                component.change(fn=lambda: None, _js="updateImg2imgResizeToTextAfterChangingImage", inputs=[], outputs=[], show_progress=False)
+                component.change(fn=lambda: None, js="updateImg2imgResizeToTextAfterChangingImage", inputs=[], outputs=[], show_progress=False)
 
             def select_img2img_tab(tab):
                 return gr.update(visible=tab in [2, 3, 4]), gr.update(visible=tab == 3),
@@ -742,7 +758,7 @@ def create_ui() -> gr.Blocks:
 
             img2img_args = dict(
                 fn=wrap_gradio_gpu_call(modules.img2img.img2img, extra_outputs=[None, '', '']),
-                _js="submit_img2img",
+                js="submit_img2img",
                 inputs=[
                     dummy_component,
                     dummy_component,
@@ -810,7 +826,7 @@ def create_ui() -> gr.Blocks:
 
             detect_image_size_btn.click(
                 fn=lambda w, h, _: (w or gr.update(), h or gr.update()),
-                _js="currentImg2imgSourceResolution",
+                js="currentImg2imgSourceResolution",
                 inputs=[dummy_component, dummy_component, dummy_component],
                 outputs=[width, height],
                 show_progress=False,
@@ -818,7 +834,7 @@ def create_ui() -> gr.Blocks:
 
             toprow.restore_progress_button.click(
                 fn=progress.restore_progress,
-                _js="restoreProgressImg2img",
+                js="restoreProgressImg2img",
                 inputs=[dummy_component],
                 outputs=[
                     output_panel.gallery,
@@ -884,7 +900,7 @@ def create_ui() -> gr.Blocks:
     with gr.Blocks(analytics_enabled=False) as pnginfo_interface:
         with ResizeHandleRow(equal_height=False):
             with gr.Column(variant='panel'):
-                image = gr.Image(elem_id="pnginfo_image", label="Source", source="upload", interactive=True, type="pil", image_mode="RGBA")
+                image = gr.Image(elem_id="pnginfo_image", label="Source", sources=["upload"], interactive=True, type="pil", image_mode="RGBA")
 
             with gr.Column(variant='panel'):
                 html = gr.HTML()
@@ -1046,7 +1062,7 @@ def create_ui() -> gr.Blocks:
 
         train_embedding.click(
             fn=wrap_gradio_gpu_call(textual_inversion_ui.train_embedding, extra_outputs=[gr.update()]),
-            _js="start_training_textual_inversion",
+            js="start_training_textual_inversion",
             inputs=[
                 dummy_component,
                 train_embedding_name,
@@ -1080,7 +1096,7 @@ def create_ui() -> gr.Blocks:
 
         train_hypernetwork.click(
             fn=wrap_gradio_gpu_call(hypernetworks_ui.train_hypernetwork, extra_outputs=[gr.update()]),
-            _js="start_training_textual_inversion",
+            js="start_training_textual_inversion",
             inputs=[
                 dummy_component,
                 train_hypernetwork_name,

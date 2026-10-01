@@ -158,7 +158,7 @@ def connect_paste_params_buttons():
 
             binding.paste_button.click(
                 fn=func,
-                _js=jsfunc,
+                js=jsfunc,
                 inputs=[binding.source_image_component],
                 outputs=[destination_image_component, destination_width_component, destination_height_component] if need_send_dementions else [destination_image_component],
                 show_progress=False,
@@ -178,7 +178,7 @@ def connect_paste_params_buttons():
 
         binding.paste_button.click(
             fn=None,
-            _js=f"switch_to_{binding.tabname}",
+            js=f"switch_to_{binding.tabname}",
             inputs=None,
             outputs=None,
             show_progress=False,
@@ -532,7 +532,7 @@ def connect_paste(button, paste_fields, input_comp, override_settings_component,
 
             vals_pairs = [f"{infotext_text}: {value}" for infotext_text, setting_name, value in vals]
 
-            return gr.Dropdown.update(value=vals_pairs, choices=vals_pairs, visible=bool(vals_pairs))
+            return gr.update(value=vals_pairs, choices=vals_pairs, visible=bool(vals_pairs))
 
         paste_fields = paste_fields + [(override_settings_component, paste_settings)]
 
@@ -544,7 +544,7 @@ def connect_paste(button, paste_fields, input_comp, override_settings_component,
     )
     button.click(
         fn=None,
-        _js=f"recalculate_prompts_{tabname}",
+        js=f"recalculate_prompts_{tabname}",
         inputs=[],
         outputs=[],
         show_progress=False,

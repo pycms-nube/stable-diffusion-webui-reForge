@@ -325,13 +325,13 @@ class AdvancedModelSamplingScript(scripts.Script):
 
             def update_visibility(mode):
                 return (
-                    gr.Group.update(visible=(mode == "Discrete")),
-                    gr.Group.update(visible=(mode == "Continuous EDM")),
-                    gr.Group.update(visible=(mode == "Continuous V")),
-                    gr.Group.update(visible=(mode == "Stable Cascade")),
-                    gr.Group.update(visible=(mode == "SD3")),
-                    gr.Group.update(visible=(mode == "Aura Flow")),
-                    gr.Group.update(visible=(mode == "Flux"))
+                    gr.update(visible=(mode == "Discrete")),
+                    gr.update(visible=(mode == "Continuous EDM")),
+                    gr.update(visible=(mode == "Continuous V")),
+                    gr.update(visible=(mode == "Stable Cascade")),
+                    gr.update(visible=(mode == "SD3")),
+                    gr.update(visible=(mode == "Aura Flow")),
+                    gr.update(visible=(mode == "Flux"))
                 )
 
             sampling_mode.change(

@@ -83,7 +83,7 @@ def save_config_state(name):
     config_states.list_config_states()
     new_value = next(iter(config_states.all_config_states.keys()), "Current")
     new_choices = ["Current"] + list(config_states.all_config_states.keys())
-    return gr.Dropdown.update(value=new_value, choices=new_choices), f"<span>Saved current webui/extension state to \"{filename}\"</span>"
+    return gr.update(value=new_value, choices=new_choices), f"<span>Saved current webui/extension state to \"{filename}\"</span>"
 
 
 def restore_config_state(confirmed, config_state_name, restore_type):
@@ -434,7 +434,7 @@ def refresh_available_extensions(url, selected_tags, showing_type, filtering_typ
 
     code, tags = refresh_available_extensions_from_data(selected_tags, showing_type, filtering_type, sort_column)
 
-    return url, code, gr.CheckboxGroup.update(choices=tags), '', ''
+    return url, code, gr.update(choices=tags), '', ''
 
 
 def refresh_available_extensions_for_tags(selected_tags, showing_type, filtering_type, sort_column, filter_text):
@@ -602,14 +602,14 @@ def create_ui():
 
                 apply.click(
                     fn=apply_and_restart,
-                    _js="extensions_apply",
+                    js="extensions_apply",
                     inputs=[extensions_disabled_list, extensions_update_list, extensions_disable_all],
                     outputs=[],
                 )
 
                 check.click(
                     fn=wrap_gradio_gpu_call(check_updates, extra_outputs=[gr.update()]),
-                    _js="extensions_check",
+                    js="extensions_check",
                     inputs=[info, extensions_disabled_list],
                     outputs=[extensions_table, info],
                 )
@@ -708,7 +708,7 @@ def create_ui():
                 config_save_button.click(fn=save_config_state, inputs=[config_save_name], outputs=[config_states_list, config_states_info])
 
                 dummy_component = gr.Label(visible=False)
-                config_restore_button.click(fn=restore_config_state, _js="config_state_confirm_restore", inputs=[dummy_component, config_states_list, config_restore_type], outputs=[config_states_info])
+                config_restore_button.click(fn=restore_config_state, js="config_state_confirm_restore", inputs=[dummy_component, config_states_list, config_restore_type], outputs=[config_states_info])
 
                 config_states_list.change(
                     fn=update_config_states_table,

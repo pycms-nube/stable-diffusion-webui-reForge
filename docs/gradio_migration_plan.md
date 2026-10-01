@@ -101,3 +101,138 @@ These require **manual UI interaction**, not just "the app starts", to confirm t
 
 Each of these must be in the verification checklist for `t_6958cdf8` (the follow-up implementation
 task), in addition to `python -c "import modules.ui"` succeeding.
+
+## 5. Course correction (implemented by t_6958cdf8): target revised to 4.44.1, escape hatch invoked
+
+When implementing this plan, the package index available in the execution environment (PyPI as
+resolved by `pip`) does not have gradio releases beyond **4.44.1** installable — `pip install
+gradio==6.15.1` fails with `No matching distribution found`, and `pip index versions gradio` lists
+4.44.1 as the newest version resolvable. The §1 "Caveat / escape hatch" is invoked as a result: this
+migration ships **Phase 1 only**, pinning `gradio==4.44.1` (the latest 4.x releasable in this
+environment) instead of 6.15.1. Phase 2 (5.x SSR rewrite) and Phase 3 (6.x app-level-param moves) are
+deferred to a follow-up task once a 5.x/6.x build is actually installable here (e.g. a different
+package source, or once the environment's index catches up). The pillow unblock from this plan's
+rationale (§1, row 2 of the options table) does NOT apply yet: gradio 4.44.1 installs pillow 10.4.0,
+still under the `pillow>=12.1.1`/`pillow>=12.3.0` floor the pillow remediation task needs. That task
+remains blocked on a future 5.x/6.x gradio bump.
+
+Work done (all within Phase 1's table, §3 above):
+
+- All ~33 `gr.<Component>.update(...)` classmethod sites (P1) mechanically replaced with
+  module-level `gr.update(...)` across all 12 flagged files.
+- All 3 `gr.Box` sites (P2) replaced with `gr.Group`.
+- All confirmed `gr.Image(..., source=...)` sites (P3, 9 sites including `controlnet_ui_group.py`
+  line ~266 and `photopea.py` line ~173, which the audit had flagged "re-check full kwargs") renamed
+  `source=` -> `sources=[...]`.
+- img2img's 4 sketch/inpaint `gr.Image(tool=...)` components (P4) ported to `gr.ImageEditor` with
+  `brush=`/`eraser=`/`layers=` replacing the old `tool=`/`brush_color=`/`image_mode=` kwargs;
+  `modules/img2img.py`'s mode-dispatch logic updated to unwrap the new
+  `{"background","layers","composite"}` EditorValue shape back to the flat image/mask values the
+  rest of that function already expected (composite for plain images, first-layer alpha channel for
+  drawn masks). ControlNet's `self.image` and `self.mask_image` (`controlnet_ui_group.py`, also
+  `tool="sketch"`) got the same ImageEditor port, with a `preprocess` wrapper that translates the new
+  EditorValue dict back into the old `{"image", "mask"}` numpy-dict shape so `controlnet.py` /
+  `external_code.py` / `run_annotator` (which all still index `unit.image["image"]` /
+  `unit.image["mask"]`) did not need to change. ControlNet's SVG-upload support (`svg_preprocess`,
+  which operated on the old gr.Image's raw dict payload) could not be ported cleanly onto
+  ImageEditor's `EditorData` payload type and was dropped — flagged as a manual-verification item
+  (narrow edge case, requires svglib/reportlab).
+- `shared.hide_dirs = {"visible": ...}` (P5) re-audited: only carries the `visible` key, which both
+  `gr.Textbox` and `gr.Checkbox` accept at 4.44.1 — confirmed NOT a break, no code change needed.
+- `gr.deprecation.GradioDeprecationWarning` (P6) guarded with `getattr(..., None)` since the
+  `gradio.deprecation` module is fully removed at 4.x; `gradio.utils.version_check` /
+  `get_local_ip_address` monkeypatches (P6) guarded with `hasattr` since those attributes no longer
+  exist at this module path at 4.44.1 (confirmed via direct introspection).
+- `webui.py`'s `shared.demo.queue(64)` (item 7): confirmed a **real latent bug**, not just a
+  theoretical risk — `Blocks.queue()`'s signature at 4.44.1 is `(status_update_rate, api_open,
+  max_size, concurrency_count, default_concurrency_limit)`, so the bare positional `64` would have
+  silently bound to `status_update_rate` instead of the intended concurrency limit. Fixed to
+  `queue(default_concurrency_limit=64)`.
+- `modules/ui_gradio_extensions.py`'s `gr.routes.templates.TemplateResponse` monkeypatch (P9):
+  confirmed `gr.routes.templates` still exists with a `TemplateResponse` attribute at 4.44.1 (this
+  item's real risk is specific to the Gradio 5.0 SSR rewrite, not reached by this Phase-1-only pass)
+  — left unchanged, still flagged for re-verification when Phase 2 is eventually attempted.
+- `modules/ui_tempdir.py`'s `gradio.components.IOComponent.pil_to_temp_file` monkeypatch (P8):
+  confirmed `IOComponent` no longer exists at `gradio.components` at 4.44.1 (renamed/restructured
+  into `gradio.components.base.Component`); guarded with `getattr(..., None)` so import does not
+  crash. There is no direct Gradio-4-native replacement monkeypatch point for this hook (components
+  now save to a cache dir via `processing_utils.save_pil_to_cache`, not a shared class-level hook),
+  so **PNG-metadata preservation on temp-saved images is a known regression** pending a proper
+  reimplementation — flagged for manual UI verification (do generated images still carry PNG info
+  when read back from gradio's temp dir?). `register_tmp_file`/`check_tmp_file`'s
+  `gradio.temp_file_sets`/`gradio.temp_dirs` probing (also P8) were already `hasattr`-guarded in the
+  original code and degrade to safe no-ops at 4.44.1 where neither attribute exists.
+- `modules/ui_components.py`'s component subclassing (P7): `gr.components.Form`,
+  `FormComponent.get_expected_parent`, and `gr.Dropdown`/`gr.Row`/`gr.Column`/`gr.Group`/`gr.HTML`/
+  `gr.ColorPicker` base classes all still resolve correctly at 4.44.1 (confirmed via direct
+  introspection — `gr.Dropdown`'s MRO already includes `FormComponent` natively) — no change needed
+  beyond the `tooltip=` kwarg strip below. The duplicate `ToolButton` in
+  `extensions-builtin/sd_forge_controlnet/.../tool_button.py` (`gr.components.FormComponent`) also
+  still resolves; left as-is (the pre-existing duplication between the two ToolButton
+  implementations is unchanged by this migration, still worth a follow-up de-dup task).
+- `_js=` kwarg (P12): confirmed the alias is **fully removed** (not just deprecated) at 4.44.1 —
+  `Button.click()`'s signature has `js=` but no `_js=` parameter at all. All 50 call sites across 14
+  files mechanically renamed `_js=` -> `js=`.
+- `tooltip=` kwarg (P13): confirmed **not accepted** by `gr.Dropdown.__init__`/`gr.Button.__init__`
+  at 4.44.1 (would raise `TypeError` under strict-kwargs). `ui_components.ToolButton.__init__` now
+  pops and discards `tooltip` before calling `super().__init__()`, covering every `ToolButton(...,
+  tooltip=...)` call site transparently; the 4 bare `gr.Button(..., tooltip=...)` sites in
+  `modules/ui_toprow.py` and the 1 bare `gr.Dropdown(..., tooltip=...)` site in
+  `modules/ui_prompt_styles.py` had the kwarg dropped directly (cosmetic-only loss, no tooltip shown
+  pre-6.0, same as the plan's original risk assessment).
+- `gr.Gallery(preview=..., object_fit=...)` (item 13 in §3's Phase 2 table, re-checked early since
+  it's a Phase-1-adjacent low-risk item): both kwargs confirmed present in `gr.Gallery.__init__`'s
+  signature at 4.44.1 — no change needed.
+- `gr.Blocks(theme=, analytics_enabled=, title=)` (item 14, a Phase 3 item, re-checked early):
+  confirmed still accepted directly on the `Blocks()` constructor at 4.44.1 (the app-level-param
+  move to `launch()` is a 6.0-era change, not reached by this Phase-1-only pass) — no change needed.
+
+Deferred to a follow-up task (requires a 5.x/6.x gradio build actually installable in the target
+environment): Phase 2's SSR-rewrite re-validation (`gr.routes.templates` monkeypatch under 5.0's SSR
+internals, `ui_tempdir.py`'s temp-file internals re-validated again under 5.0, `_js=`/`js=` alias
+survival at 5.x — moot now since `_js=` is already fully gone by 4.44.1 so this is resolved), and
+Phase 3's Gradio-6 app-level-param moves and `gr.Interface` default `api_name` change
+(`controlnet_ui/modal.py`'s `ModalInterface`). The pillow CVE remediation task remains blocked until
+that follow-up lands.
+
+## 6. Verification
+
+Performed in this environment (full UI launch with the real webui stack was not attempted — it
+requires the full torch/diffusers ML dependency chain, which this migration task's scope and
+environment do not install):
+
+- `pip install gradio==4.44.1` succeeds in an isolated venv (plus `huggingface_hub<0.26` pinned
+  down a level, since gradio 4.44.1's `oauth.py` imports `HfFolder`/`whoami` from
+  `huggingface_hub`, which a too-new `huggingface_hub` no longer exports — not a gradio-side
+  breaking change, a transitive dependency pin gap; resolved for the verification venv, should be
+  revisited if `pip install -r requirements.txt` hits the same conflict in a real install).
+- Every component-construction pattern introduced or changed by this migration was independently
+  exercised against the real installed gradio 4.44.1 inside `gr.Blocks()` and confirmed to construct
+  without raising: the plain and brush-enabled `gr.ImageEditor(...)` replacements for `gr.Image(tool=
+  ...)`, `gr.Group(...)` replacing `gr.Box(...)`, `gr.Image(sources=[...])`, `gr.update(...)`,
+  `gr.Button(...)`/`gr.Dropdown(...)` without `tooltip=`, and `demo.queue(default_concurrency_limit=
+  64)`.
+- `ToolButton(value=..., tooltip="...")` (the wrapped class, not bare `gr.Button`) confirmed to
+  still construct successfully with the `tooltip` kwarg silently stripped.
+- The `ImageEditor` `preprocess` wrapper (mask/background extraction from the new EditorValue shape)
+  exercised standalone against a real `gr.ImageEditor` instance's `preprocess` method for the
+  `None`-payload (no image uploaded) case; full round-trip through an actual uploaded image was not
+  exercised (would require a running gradio server + simulated browser upload, out of scope here).
+- `python -m py_compile` run against every `.py` file touched by this migration (24 files across
+  `modules/`, `extensions-builtin/`, and `webui.py`): all compile cleanly under Python 3.9.
+- NOT verified (requires a running webui instance with full ML deps installed, or Phase 2/3 gradio
+  versions this environment cannot install): the 7 silent-runtime-risk items listed in §4 beyond
+  what's covered above, actual UI rendering/interaction in a browser, ControlNet's preprocessor
+  pipeline end-to-end with a real uploaded image, and whether `pip install -r
+  requirements_versions.txt` (the full dependency set, not just gradio in isolation) resolves
+  without conflicts elsewhere in the dependency graph.
+
+Acceptance criterion from the task body ("repo installs cleanly with the new gradio version and
+`python -c "import modules.ui"` succeeds with no gradio deprecation errors surfaced as exceptions")
+is **partially met**: the gradio-version install succeeds in isolation and every gradio API call
+site this migration touches has been individually confirmed against the real installed package, but
+a full `import modules.ui` was not exercised end-to-end because that import pulls in the entire
+torch/diffusers/ML stack, which is outside this environment and this task's scope to install.
+Recommend `t_2507cd66` (the next task in this chain, "Verify UI renders and functions after the
+gradio bump") perform that full-stack import + browser-level check in an environment with the ML
+dependencies installed.

@@ -62,7 +62,7 @@ def on_ui_tabs():
     with gr.Blocks() as svd_block:
         with ResizeHandleRow():
             with gr.Column():
-                input_image = gr.Image(label='Input Image', source='upload', type='numpy', height=400)
+                input_image = gr.Image(label='Input Image', sources=['upload'], type='numpy', height=400)
 
                 with gr.Row():
                     filename = gr.Dropdown(label="SVD Checkpoint Filename",

@@ -46,7 +46,7 @@ def materialize_styles(prompt, negative_prompt, styles):
     prompt = shared.prompt_styles.apply_styles_to_prompt(prompt, styles)
     negative_prompt = shared.prompt_styles.apply_negative_styles_to_prompt(negative_prompt, styles)
 
-    return [gr.Textbox.update(value=prompt), gr.Textbox.update(value=negative_prompt), gr.Dropdown.update(value=[])]
+    return [gr.update(value=prompt), gr.update(value=negative_prompt), gr.update(value=[])]
 
 
 def refresh_styles():
@@ -60,10 +60,12 @@ class UiPromptStyles:
         self.main_ui_negative_prompt = main_ui_negative_prompt
 
         with gr.Row(elem_id=f"{tabname}_styles_row"):
-            self.dropdown = gr.Dropdown(label="Styles", show_label=False, elem_id=f"{tabname}_styles", choices=list(shared.prompt_styles.styles), value=[], multiselect=True, tooltip="Styles")
+            # Gradio 4.0 removed the non-standard tooltip= kwarg from gr.Dropdown.__init__; dropped
+            # (cosmetic loss only) rather than left to raise TypeError.
+            self.dropdown = gr.Dropdown(label="Styles", show_label=False, elem_id=f"{tabname}_styles", choices=list(shared.prompt_styles.styles), value=[], multiselect=True)
             edit_button = ui_components.ToolButton(value=styles_edit_symbol, elem_id=f"{tabname}_styles_edit_button", tooltip="Edit styles")
 
-        with gr.Box(elem_id=f"{tabname}_styles_dialog", elem_classes="popup-dialog") as styles_dialog:
+        with gr.Group(elem_id=f"{tabname}_styles_dialog", elem_classes="popup-dialog") as styles_dialog:
             with gr.Row():
                 self.selection = gr.Dropdown(label="Styles", elem_id=f"{tabname}_styles_edit_select", choices=list(shared.prompt_styles.styles), value=[], allow_custom_value=True, info="Styles allow you to add custom text to prompt. Use the {prompt} token in style text, and it will be replaced with user's prompt when applying style. Otherwise, style's text will be added to the end of the prompt.")
                 ui_common.create_refresh_button([self.dropdown, self.selection], shared.prompt_styles.reload, lambda: {"choices": list(shared.prompt_styles.styles)}, f"refresh_{tabname}_styles")
@@ -97,7 +99,7 @@ class UiPromptStyles:
 
         self.delete.click(
             fn=delete_style,
-            _js='function(name){ if(name == "") return ""; return confirm("Delete style " + name + "?") ? name : ""; }',
+            js='function(name){ if(name == "") return ""; return confirm("Delete style " + name + "?") ? name : ""; }',
             inputs=[self.selection],
             outputs=[self.selection, self.prompt, self.neg_prompt],
             show_progress=False,
@@ -120,4 +122,4 @@ class UiPromptStyles:
             inputs=[self.main_ui_prompt, self.main_ui_negative_prompt, self.dropdown],
             outputs=[self.main_ui_prompt, self.main_ui_negative_prompt, self.dropdown],
             show_progress=False,
-        ).then(fn=None, _js="function(){update_"+self.tabname+"_tokens(); closePopup();}", show_progress=False)
+        ).then(fn=None, js="function(){update_"+self.tabname+"_tokens(); closePopup();}", show_progress=False)

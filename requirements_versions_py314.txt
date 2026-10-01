@@ -21,7 +21,7 @@ einops==0.8.0
 facexlib==0.3.0
 fastapi==0.136.3
 starlette==1.2.1
-gradio==3.41.2
+gradio==4.44.1
 httpcore==0.17.0
 inflection==0.5.1
 jsonmerge==1.9.2
