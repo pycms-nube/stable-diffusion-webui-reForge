@@ -170,7 +170,7 @@ class Photopea(object):
         """
         output = gr.Image(
             visible=False,
-            source="upload",
+            sources=["upload"],
             type="numpy",
             elem_classes=["cnet-photopea-output"],
         )

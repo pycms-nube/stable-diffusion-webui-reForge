@@ -134,7 +134,12 @@ def webui_worker() -> None:
         startup_timer.record("create ui")
 
         if not cmd_opts.no_gradio_queue:
-            shared.demo.queue(64)
+            # Gradio 4.0's Blocks.queue() signature is (status_update_rate, api_open, max_size,
+            # concurrency_count, default_concurrency_limit) -- concurrency_count was renamed to
+            # default_concurrency_limit and moved position. The old bare queue(64) positional call
+            # would now silently bind 64 to status_update_rate instead, a silent behavior change.
+            # Pass explicitly by keyword to preserve the original "64 concurrent requests" intent.
+            shared.demo.queue(default_concurrency_limit=64)
 
         gradio_auth_creds: list[tuple[Any, ...] | tuple[str, ...]] | None = list(
             initialize_util.get_gradio_auth_creds()) or None

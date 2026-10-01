@@ -76,7 +76,7 @@ class ControlNetPresetUI(object):
                 tooltip="Refresh preset",
             )
 
-        with gr.Box(
+        with gr.Group(
             elem_classes=["popup-dialog", "cnet-preset-enter-name"],
             elem_id=f"{id_prefix}_cnet_preset_enter_name",
         ) as self.name_dialog:
@@ -197,7 +197,7 @@ class ControlNetPresetUI(object):
             show_progress="hidden",
         ).then(
             fn=None,
-            _js=f"""
+            js=f"""
             (name) => {{
                 if (name === "{NEW_PRESET}")
                     popup(gradioApp().getElementById('{self.name_dialog.elem_id}'));
@@ -207,7 +207,7 @@ class ControlNetPresetUI(object):
 
         def delete_preset(name: str):
             ControlNetPresetUI.delete_preset(name)
-            return gr.Dropdown.update(
+            return gr.update(
                 choices=ControlNetPresetUI.dropdown_choices(),
                 value=NEW_PRESET,
             ), gr.update(visible=False)
@@ -238,7 +238,7 @@ class ControlNetPresetUI(object):
             inputs=[self.preset_name, *ui_states],
             outputs=[self.name_dialog, self.dropdown],
             show_progress="hidden",
-        ).then(fn=None, _js="closePopup")
+        ).then(fn=None, js="closePopup")
 
         self.refresh_button.click(
             fn=ControlNetPresetUI.refresh_preset,

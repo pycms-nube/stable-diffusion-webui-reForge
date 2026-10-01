@@ -28,7 +28,7 @@ class ControlNetExampleForge(scripts.Script):
         with gr.Accordion(open=False, label=self.title()):
             gr.HTML('This is an example controlnet extension for developers.')
             gr.HTML('You see this extension because you used --show-controlnet-example')
-            input_image = gr.Image(source='upload', type='numpy')
+            input_image = gr.Image(sources=['upload'], type='numpy')
             funny_slider = gr.Slider(label='This slider does nothing. It just shows you how to transfer parameters.',
                                      minimum=0.0, maximum=1.0, value=0.5)
 

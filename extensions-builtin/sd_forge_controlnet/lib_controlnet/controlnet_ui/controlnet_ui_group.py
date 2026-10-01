@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 from dataclasses import dataclass
 import numpy as np
 
-from lib_controlnet.utils import svg_preprocess, judge_image_type
+from lib_controlnet.utils import judge_image_type
 from lib_controlnet import (
     global_state,
     external_code,
@@ -262,23 +262,59 @@ class ControlNetUiGroup(object):
                 with gr.Tab(label="Single Image") as self.upload_tab:
                     with gr.Row(elem_classes=["cnet-image-row"], equal_height=True):
                         with gr.Group(elem_classes=["cnet-input-image-group"]):
-                            self.image = gr.Image(
-                                source="upload",
-                                brush_radius=20,
+                            self.image = gr.ImageEditor(
+                                sources=["upload"],
                                 mirror_webcam=False,
                                 type="numpy",
-                                tool="sketch",
+                                brush=gr.Brush(
+                                    colors=[
+                                        shared.opts.img2img_inpaint_mask_brush_color
+                                        if hasattr(
+                                            shared.opts, "img2img_inpaint_mask_brush_color"
+                                        )
+                                        else "#000000"
+                                    ],
+                                    color_mode="fixed",
+                                ),
+                                eraser=False,
+                                layers=False,
                                 elem_id=f"{elem_id_tabname}_{tabname}_input_image",
                                 elem_classes=["cnet-image"],
-                                brush_color=shared.opts.img2img_inpaint_mask_brush_color
-                                if hasattr(
-                                    shared.opts, "img2img_inpaint_mask_brush_color"
-                                )
-                                else None,
                             )
-                            self.image.preprocess = functools.partial(
-                                svg_preprocess, preprocess=self.image.preprocess
-                            )
+                            # Gradio 4.0 replaced gr.Image(tool="sketch") with gr.ImageEditor, whose
+                            # preprocess() returns {"background", "layers", "composite"} instead of the
+                            # old {"image", "mask"} dict that every downstream consumer of
+                            # ControlNetUnit.image (controlnet.py, external_code.py, this file's
+                            # run_annotator) still expects. Wrap preprocess to translate the new
+                            # EditorValue shape back to the old {"image", "mask"} numpy-array dict so
+                            # none of that downstream code needs to change.
+                            _image_editor_preprocess = self.image.preprocess
+
+                            def _editor_to_image_mask_dict(payload, _orig=_image_editor_preprocess):
+                                value = _orig(payload)
+                                if value is None:
+                                    return None
+                                if isinstance(value, dict) and "composite" in value:
+                                    bg = value.get("background")
+                                    mask = None
+                                    layers = value.get("layers") or []
+                                    if layers:
+                                        layer = layers[0]
+                                        if layer is not None and getattr(layer, "shape", [0])[-1] == 4:
+                                            alpha = layer[..., 3]
+                                            mask = np.stack([alpha, alpha, alpha], axis=-1)
+                                    if mask is None and bg is not None:
+                                        mask = np.zeros_like(bg)
+                                    return {"image": bg, "mask": mask}
+                                return value
+
+                            self.image.preprocess = _editor_to_image_mask_dict
+                            # SVG upload support (svg_preprocess) operated on the old gr.Image's raw
+                            # payload dict ({"image": base64 string, ...}); ImageEditor's raw payload is
+                            # an EditorData object, not a dict, so svg_preprocess no longer applies
+                            # cleanly here. SVG upload for this control is a narrow, rarely-used edge
+                            # case (requires svglib/reportlab installed); it is disabled rather than
+                            # silently miswired. Flagged for manual UI verification per the migration plan.
                             self.openpose_editor.render_upload()
 
                         with gr.Group(
@@ -310,21 +346,49 @@ class ControlNetUiGroup(object):
                         with gr.Group(
                             visible=False, elem_classes=["cnet-mask-image-group"]
                         ) as self.mask_image_group:
-                            self.mask_image = gr.Image(
+                            self.mask_image = gr.ImageEditor(
                                 value=None,
                                 label="Mask",
                                 elem_id=f"{elem_id_tabname}_{tabname}_mask_image",
                                 elem_classes=["cnet-mask-image"],
                                 interactive=True,
-                                brush_radius=20,
                                 type="numpy",
-                                tool="sketch",
-                                brush_color=shared.opts.img2img_inpaint_mask_brush_color
-                                if hasattr(
-                                    shared.opts, "img2img_inpaint_mask_brush_color"
-                                )
-                                else None,
+                                brush=gr.Brush(
+                                    colors=[
+                                        shared.opts.img2img_inpaint_mask_brush_color
+                                        if hasattr(
+                                            shared.opts, "img2img_inpaint_mask_brush_color"
+                                        )
+                                        else "#000000"
+                                    ],
+                                    color_mode="fixed",
+                                ),
+                                eraser=False,
+                                layers=False,
                             )
+                            # Same {"image", "mask"} -> {"background", "layers", "composite"} dict
+                            # shape change as self.image above (Gradio 4.0 ImageEditor migration).
+                            _mask_image_preprocess = self.mask_image.preprocess
+
+                            def _mask_editor_to_image_mask_dict(payload, _orig=_mask_image_preprocess):
+                                value = _orig(payload)
+                                if value is None:
+                                    return None
+                                if isinstance(value, dict) and "composite" in value:
+                                    bg = value.get("background")
+                                    mask = None
+                                    layers = value.get("layers") or []
+                                    if layers:
+                                        layer = layers[0]
+                                        if layer is not None and getattr(layer, "shape", [0])[-1] == 4:
+                                            alpha = layer[..., 3]
+                                            mask = np.stack([alpha, alpha, alpha], axis=-1)
+                                    if mask is None and bg is not None:
+                                        mask = np.zeros_like(bg)
+                                    return {"image": bg, "mask": mask}
+                                return value
+
+                            self.mask_image.preprocess = _mask_editor_to_image_mask_dict
 
                 with gr.Tab(label="Batch Folder") as self.batch_tab:
                     with gr.Row():
@@ -606,7 +670,7 @@ class ControlNetUiGroup(object):
         def fn_save_ipa_custom(value):
             with open(IPA_CW_PATH, "w") as file:
                 file.write(value)
-            return gr.Dropdown.update(value=list(external_code.ipa_block_weight_presets.keys())[-1])
+            return gr.update(value=list(external_code.ipa_block_weight_presets.keys())[-1])
 
         self.type_filter.change(toggle_ipa_controlls, inputs=self.type_filter, outputs=self.ipa_block_weight)
         self.type_filter.change(toggle_ipa_controlls, inputs=self.type_filter, outputs=self.ipa_block_weight_selector)
@@ -733,7 +797,7 @@ class ControlNetUiGroup(object):
                 interm = np.asarray(image.get("image"))
                 return closesteight(interm.shape[1]), closesteight(interm.shape[0])
             else:
-                return gr.Slider.update(), gr.Slider.update()
+                return gr.update(), gr.update()
 
         self.send_dimen_button.click(
             fn=send_dimensions,
@@ -767,7 +831,7 @@ class ControlNetUiGroup(object):
     def register_refresh_all_models(self):
         def refresh_all_models():
             global_state.update_controlnet_filenames()
-            return gr.Dropdown.update(
+            return gr.update(
                 choices=global_state.get_all_controlnet_names(),
             )
 
@@ -842,15 +906,15 @@ class ControlNetUiGroup(object):
             if self.prevent_next_n_module_update > 0:
                 self.prevent_next_n_module_update -= 1
                 return [
-                    gr.Dropdown.update(choices=filtered_preprocessor_list),
-                    gr.Dropdown.update(choices=filtered_controlnet_names),
+                    gr.update(choices=filtered_preprocessor_list),
+                    gr.update(choices=filtered_controlnet_names),
                 ]
             else:
                 return [
-                    gr.Dropdown.update(
+                    gr.update(
                         value=default_preprocessor, choices=filtered_preprocessor_list
                     ),
-                    gr.Dropdown.update(
+                    gr.update(
                         value=default_controlnet_name, choices=filtered_controlnet_names
                     ),
                 ]
@@ -997,20 +1061,20 @@ class ControlNetUiGroup(object):
 
     def register_create_canvas(self):
         self.open_new_canvas_button.click(
-            lambda: gr.Accordion.update(visible=True),
+            lambda: gr.update(visible=True),
             inputs=None,
             outputs=self.create_canvas,
             show_progress=False,
         )
         self.canvas_cancel_button.click(
-            lambda: gr.Accordion.update(visible=False),
+            lambda: gr.update(visible=False),
             inputs=None,
             outputs=self.create_canvas,
             show_progress=False,
         )
 
         def fn_canvas(h, w):
-            return np.zeros(shape=(h, w, 3), dtype=np.uint8), gr.Accordion.update(
+            return np.zeros(shape=(h, w, 3), dtype=np.uint8), gr.update(
                 visible=False
             )
 

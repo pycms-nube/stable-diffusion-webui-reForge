@@ -97,10 +97,12 @@ class Toprow:
         with gr.Row(elem_id=f"{self.id_part}_generate_box", elem_classes=["generate-box"] + (["generate-box-compact"] if self.is_compact else []), render=not self.is_compact) as submit_box:
             self.submit_box = submit_box
 
-            self.interrupt = gr.Button('Interrupt', elem_id=f"{self.id_part}_interrupt", elem_classes="generate-box-interrupt", tooltip="End generation immediately or after completing current batch")
-            self.skip = gr.Button('Skip', elem_id=f"{self.id_part}_skip", elem_classes="generate-box-skip", tooltip="Stop generation of current batch and continues onto next batch")
-            self.interrupting = gr.Button('Interrupting...', elem_id=f"{self.id_part}_interrupting", elem_classes="generate-box-interrupting", tooltip="Interrupting generation...")
-            self.submit = gr.Button('Generate', elem_id=f"{self.id_part}_generate", variant='primary', tooltip="Right click generate forever menu")
+            # Gradio 4.0 removed the non-standard tooltip= kwarg from gr.Button.__init__; dropped here
+            # (cosmetic loss only -- no tooltip shown pre-6.0) rather than left to raise TypeError.
+            self.interrupt = gr.Button('Interrupt', elem_id=f"{self.id_part}_interrupt", elem_classes="generate-box-interrupt")
+            self.skip = gr.Button('Skip', elem_id=f"{self.id_part}_skip", elem_classes="generate-box-skip")
+            self.interrupting = gr.Button('Interrupting...', elem_id=f"{self.id_part}_interrupting", elem_classes="generate-box-interrupting")
+            self.submit = gr.Button('Generate', elem_id=f"{self.id_part}_generate", variant='primary')
 
             def interrupt_function():
                 if not shared.state.stopping_generation and shared.state.job_count > 1 and shared.opts.interrupt_after_current:
@@ -110,7 +112,7 @@ class Toprow:
                     shared.state.interrupt()
 
             self.skip.click(fn=shared.state.skip)
-            self.interrupt.click(fn=interrupt_function, _js='function(){ showSubmitInterruptingPlaceholder("' + self.id_part + '"); }')
+            self.interrupt.click(fn=interrupt_function, js='function(){ showSubmitInterruptingPlaceholder("' + self.id_part + '"); }')
             self.interrupting.click(fn=interrupt_function)
 
     def create_tools_row(self):
@@ -134,7 +136,7 @@ class Toprow:
 
             self.clear_prompt_button.click(
                 fn=lambda *x: x,
-                _js="confirm_clear_prompt",
+                js="confirm_clear_prompt",
                 inputs=[self.prompt, self.negative_prompt],
                 outputs=[self.prompt, self.negative_prompt],
             )

@@ -153,18 +153,42 @@ def img2img_function(id_task: str, request: gr.Request, mode: int, prompt: str, 
 
     is_batch = mode == 5
 
+    # Gradio 4.0 replaced gr.Image(tool=...) with gr.ImageEditor, whose value is a dict with
+    # "background"/"layers"/"composite" keys instead of the old {"image", "mask"} dict (or a bare
+    # image for plain gr.Image). Unwrap editor payloads to the flat image/mask values the rest of
+    # this function (unchanged from pre-migration) expects.
+    def _editor_composite(value):
+        if isinstance(value, dict) and "composite" in value:
+            return value["composite"] if value["composite"] is not None else value.get("background")
+        return value
+
+    def _editor_mask(value):
+        """Extract a drawn-mask image from an ImageEditor value's first layer alpha channel."""
+        if isinstance(value, dict) and "layers" in value:
+            layers = value.get("layers") or []
+            if layers:
+                layer = layers[0]
+                if layer is not None and layer.mode == "RGBA":
+                    return layer.getchannel("A")
+            return None
+        return None
+
     if mode == 0:  # img2img
-        image = init_img
+        image = _editor_composite(init_img)
         mask = None
     elif mode == 1:  # img2img sketch
-        image = sketch
+        image = _editor_composite(sketch)
         mask = None
     elif mode == 2:  # inpaint
-        image, mask = init_img_with_mask["image"], init_img_with_mask["mask"]
-        mask = processing.create_binary_mask(mask)
+        if isinstance(init_img_with_mask, dict) and "layers" in init_img_with_mask:
+            image = init_img_with_mask.get("background")
+            mask = _editor_mask(init_img_with_mask)
+        else:
+            image, mask = init_img_with_mask["image"], init_img_with_mask["mask"]
+        mask = processing.create_binary_mask(mask) if mask is not None else None
     elif mode == 3:  # inpaint sketch
-        image = inpaint_color_sketch
-        orig = inpaint_color_sketch_orig or inpaint_color_sketch
+        image = _editor_composite(inpaint_color_sketch)
+        orig = inpaint_color_sketch_orig or image
         pred = np.any(np.array(image) != np.array(orig), axis=-1)
         mask = Image.fromarray(pred.astype(np.uint8) * 255, "L")
         mask = ImageEnhance.Brightness(mask).enhance(1 - mask_alpha / 100)

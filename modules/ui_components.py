@@ -14,6 +14,10 @@ class ToolButton(FormComponent, gr.Button):
 
     def __init__(self, *args, **kwargs):
         classes = kwargs.pop("elem_classes", [])
+        # Gradio 4.0 removed the non-standard `tooltip=` kwarg from gr.Button.__init__ (it predates
+        # the official tooltip API added back in 6.0); strip it here so every ToolButton(...,
+        # tooltip=...) call site across the codebase keeps working without a hard TypeError.
+        kwargs.pop("tooltip", None)
         super().__init__(*args, elem_classes=["tool", *classes], **kwargs)
 
     def get_block_name(self):
@@ -118,7 +122,7 @@ class InputAccordion(gr.Checkbox):
         }
         super().__init__(value, **kwargs_checkbox)
 
-        self.change(fn=None, _js='function(checked){ inputAccordionChecked("' + self.accordion_id + '", checked); }', inputs=[self])
+        self.change(fn=None, js='function(checked){ inputAccordionChecked("' + self.accordion_id + '", checked); }', inputs=[self])
 
         kwargs_accordion = {
             **kwargs,

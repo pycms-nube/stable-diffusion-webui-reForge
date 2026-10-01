@@ -66,7 +66,7 @@ class UserMetadataEditor:
 
         self.html_status = gr.HTML(elem_classes="edit-user-metadata-status")
 
-        self.button_cancel.click(fn=None, _js="closePopup")
+        self.button_cancel.click(fn=None, js="closePopup")
 
     def get_card_html(self, name):
         item = self.page.items.get(name, {})
@@ -148,7 +148,7 @@ class UserMetadataEditor:
     def setup_save_handler(self, button, func, components):
         button\
             .click(fn=func, inputs=[self.edit_name_input, *components], outputs=[])\
-            .then(fn=None, _js="function(name){closePopup(); extraNetworksRefreshSingleCard(" + json.dumps(self.page.name) + "," + json.dumps(self.tabname) + ", name);}", inputs=[self.edit_name_input], outputs=[])
+            .then(fn=None, js="function(name){closePopup(); extraNetworksRefreshSingleCard(" + json.dumps(self.page.name) + "," + json.dumps(self.tabname) + ", name);}", inputs=[self.edit_name_input], outputs=[])
 
     def create_editor(self):
         self.create_default_editor_elems()
@@ -164,7 +164,7 @@ class UserMetadataEditor:
         self.setup_save_handler(self.button_save, self.save_user_metadata, [self.edit_description, self.edit_notes])
 
     def create_ui(self):
-        with gr.Box(visible=False, elem_id=self.id_part, elem_classes="edit-user-metadata") as box:
+        with gr.Group(visible=False, elem_id=self.id_part, elem_classes="edit-user-metadata") as box:
             self.box = box
 
             self.edit_name_input = gr.Textbox("Edit user metadata card id", visible=False, elem_id=f"{self.id_part}_name")
@@ -196,12 +196,12 @@ class UserMetadataEditor:
     def setup_ui(self, gallery):
         self.button_replace_preview.click(
             fn=self.save_preview,
-            _js=f"function(x, y, z){{return [selected_gallery_index_id('{self.tabname + '_gallery_container'}'), y, z]}}",
+            js=f"function(x, y, z){{return [selected_gallery_index_id('{self.tabname + '_gallery_container'}'), y, z]}}",
             inputs=[self.edit_name_input, gallery, self.edit_name_input],
             outputs=[self.html_preview, self.html_status]
         ).then(
             fn=None,
-            _js="function(name){extraNetworksRefreshSingleCard(" + json.dumps(self.page.name) + "," + json.dumps(self.tabname) + ", name);}",
+            js="function(name){extraNetworksRefreshSingleCard(" + json.dumps(self.page.name) + "," + json.dumps(self.tabname) + ", name);}",
             inputs=[self.edit_name_input],
             outputs=[]
         )

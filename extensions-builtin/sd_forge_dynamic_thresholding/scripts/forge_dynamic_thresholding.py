@@ -149,7 +149,7 @@ class DynamicThresholdingForForge(scripts.Script):
                 )
 
             def update_visibility(simple):
-                return gr.Group.update(visible=True), gr.Group.update(visible=not simple)
+                return gr.update(visible=True), gr.update(visible=not simple)
 
             simple_mode.change(
                 fn=update_visibility,
