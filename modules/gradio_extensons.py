@@ -37,8 +37,8 @@ def IOComponent_init(self, *args, **kwargs):
     return res
 
 
-def Block_get_config(self):
-    config = original_Block_get_config(self)
+def Block_get_config(self, *args, **kwargs):
+    config = original_Block_get_config(self, *args, **kwargs)
 
     webui_tooltip = getattr(self, 'webui_tooltip', None)
     if webui_tooltip:
@@ -141,7 +141,61 @@ def Image_init_extension(self, *args, **kwargs):
     return res
 
 
-original_IOComponent_init = patches.patch(__name__, obj=gr.components.Component, field="__init__", replacement=IOComponent_init)
+original_IOComponent_init = gr.components.Component.__init__  # kept for backwards-compatible references
+
+
+def _install_component_init_hooks():
+    """Gradio >= 4 components define their own __init__ without **kwargs, so webui-only kwargs
+    (e.g. `tooltip`) must be removed *before* the concrete class __init__ runs. Wrap every
+    Component subclass __init__; only the outermost call (depth 0) runs the webui hooks."""
+    import functools
+    import threading
+
+    state = threading.local()
+
+    def wrap(cls):
+        orig = cls.__dict__["__init__"]
+
+        @functools.wraps(orig)
+        def wrapper(self, *args, **kwargs):
+            if getattr(state, "depth", 0):
+                return orig(self, *args, **kwargs)
+            state.depth = 1
+            try:
+                self.webui_tooltip = kwargs.pop("tooltip", None)
+
+                if scripts.scripts_current is not None:
+                    scripts.scripts_current.before_component(self, **kwargs)
+
+                scripts.script_callbacks.before_component_callback(self, **kwargs)
+
+                res = orig(self, *args, **kwargs)
+
+                add_classes_to_gradio_component(self)
+
+                scripts.script_callbacks.after_component_callback(self, **kwargs)
+
+                if scripts.scripts_current is not None:
+                    scripts.scripts_current.after_component(self, **kwargs)
+            finally:
+                state.depth = 0
+            return res
+
+        cls.__init__ = wrapper
+
+    seen = set()
+    stack = [gr.components.Component]
+    while stack:
+        cls = stack.pop()
+        if cls in seen:
+            continue
+        seen.add(cls)
+        if "__init__" in cls.__dict__:
+            wrap(cls)
+        stack.extend(cls.__subclasses__())
+
+
+_install_component_init_hooks()
 original_Block_get_config = patches.patch(__name__, obj=gr.blocks.Block, field="get_config", replacement=Block_get_config)
 original_BlockContext_init = patches.patch(__name__, obj=gr.blocks.BlockContext, field="__init__", replacement=BlockContext_init)
 original_Blocks_get_config_file = patches.patch(__name__, obj=gr.blocks.Blocks, field="get_config_file", replacement=Blocks_get_config_file)

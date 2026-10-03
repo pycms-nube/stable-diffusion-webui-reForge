@@ -264,7 +264,7 @@ class ControlNetUiGroup(object):
                         with gr.Group(elem_classes=["cnet-input-image-group"]):
                             self.image = gr.ImageEditor(
                                 sources=["upload"],
-                                mirror_webcam=False,
+                                webcam_options=gr.WebcamOptions(mirror=False),
                                 type="numpy",
                                 brush=gr.Brush(
                                     colors=[
@@ -822,7 +822,7 @@ class ControlNetUiGroup(object):
     def register_webcam_mirror_toggle(self):
         def webcam_mirror_toggle():
             self.webcam_mirrored = not self.webcam_mirrored
-            return {"mirror_webcam": self.webcam_mirrored, "__type__": "update"}
+            return {"webcam_options": gr.WebcamOptions(mirror=self.webcam_mirrored), "__type__": "update"}
 
         self.webcam_mirror.click(
             webcam_mirror_toggle, inputs=None, outputs=self.image, show_progress=False
