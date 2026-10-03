@@ -1,5 +1,5 @@
 import launch
-import pkg_resources
+import importlib.metadata
 import sys
 import os
 import shutil
@@ -19,7 +19,7 @@ def comparable_version(version: str) -> Tuple:
 
 def get_installed_version(package: str) -> Optional[str]:
     try:
-        return pkg_resources.get_distribution(package).version
+        return importlib.metadata.version(package)
     except Exception:
         return None
 
