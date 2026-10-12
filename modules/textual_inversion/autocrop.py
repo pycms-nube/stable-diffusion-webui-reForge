@@ -4,7 +4,7 @@ import os
 import numpy as np
 from PIL import ImageDraw
 from modules import paths_internal
-from pkg_resources import parse_version
+from packaging.version import parse as parse_version
 
 GREEN = "#0F0"
 BLUE = "#00F"
