@@ -70,3 +70,8 @@ CLAUDE.md
 .claude/settings.local.json
 embeddings
 .obsidian/
+
+# local dev: task worktrees, ComfyUI reference checkout, stubs gradio>=4 writes next to custom components
+/.worktrees/
+/ComfyUI/
+*.pyi

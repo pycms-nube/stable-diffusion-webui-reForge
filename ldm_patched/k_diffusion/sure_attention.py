@@ -21,7 +21,7 @@ Low entropy  → confident, sharp attention → trust the model more.
 This is the spatial analogue of wavelet SURE (which weights by frequency band
 risk). SURE-AG weights by semantic/spatial uncertainty.
 
-Formal proofs: SURE_attention.lean
+Formal proofs: lean_proofs/SGPSProofs/Attention.lean
   §1 attn_entropy_nonneg     — H(p) ≥ 0 for valid distributions
   §2 attn_weight_bounded     — W(U) ∈ [1, 1+w] (step stays finite)
   §3 sure_ag_effective_range — descent requires α < 1/(2(1+w))

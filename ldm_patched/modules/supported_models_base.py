@@ -42,7 +42,7 @@ def apply_checkpoint_sampling_params(out, state_dict):
     if "alphas_cumprod" in state_dict:
         alphas = state_dict["alphas_cumprod"].float()
 
-        # BF16 rounding trap (MODEL_META.md §Precision / A1111 #14071):
+        # BF16 rounding trap (docs/design/MODEL_META.md §Precision / A1111 #14071):
         # alphas_cumprod[0] is stored as BF16 ≈ 0.99915, which rounds to exactly
         # 1.0.  After .float() it is still 1.0 → sigma_min = 0, log_sigmas[0] = -inf,
         # corrupting the timestep lookup for all low-noise steps.

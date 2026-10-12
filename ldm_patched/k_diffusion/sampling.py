@@ -5151,7 +5151,7 @@ def _pca_noise_single(img, patch_size=8, min_sigma=1e-3):
 
 
 def _sure_effective_alpha(alpha: float, sigma_t, adam_active: bool) -> float:
-    """Effective gradient-descent step size validated by Lean (SURE_verification.lean).
+    """Effective gradient-descent step size validated by Lean (lean_proofs/SGPSProofs/Verification.lean).
 
     Lean theorem cond4_step_closer proves descent is guaranteed for any
     effective_alpha ∈ (0, 1/2).  The formula alpha / (1 + σ_norm) satisfies
@@ -5415,7 +5415,7 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
       x̂      = Dθ(xnoisy, σ̂₀)
       tr{J}  ≈ b^T (Dθ(xnoisy + ε·b, σ̂₀) − x̂) · ε^{-1}   [scalar, MC averaged]
       SURE   = −n·σ̂₀² + ‖xnoisy − x̂‖² + 2·σ̂₀²·tr{J}      [logged only]
-      Note: both denoiser calls use σ̂₀ (not max(ε,σ̂₀)); see SURE_sgps_full.lean §2.1.
+      Note: both denoiser calls use σ̂₀ (not max(ε,σ̂₀)); see lean_proofs/SGPSProofs/Full.lean §2.1.
 
     adam_state: dict with keys 'optimizer' (torch.optim instance) and 'param'
                 (leaf tensor) — mutated in-place across steps via optimizer.step().
@@ -5438,7 +5438,7 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
     device = x0_hat.device
     sigma_denoiser = torch.tensor(sigma_hat_0, device=device, dtype=x0_hat.dtype)
     # Use sigma_denoiser for BOTH the base and perturbed calls.
-    # SURE_sgps_full.lean §2.1 (Gap #1) proves that using max(ε, σ̂₀) for the
+    # lean_proofs/SGPSProofs/Full.lean §2.1 (Gap #1) proves that using max(ε, σ̂₀) for the
     # perturbed call while using σ̂₀ for the base call evaluates two *different*
     # denoiser functions, introducing a systematic bias of O(|σ_p − σ̂₀|/ε) in
     # the Hutchinson trace estimate (sigma_inconsistency_bias_structure).
@@ -5550,7 +5550,7 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
         sure_val += jac_contribution
 
         # ── Lean-backed jac reliability gate ───────────────────────────────────
-        # Lean (SURE_verification.lean, cond5_strict_descent) proves descent is
+        # Lean (lean_proofs/SGPSProofs/Verification.lean, cond5_strict_descent) proves descent is
         # guaranteed with proxy gradient 2·r regardless of jac.
         #
         # Gap #6 fix: variance-based Hutchinson floor (3σ bound).
@@ -5585,7 +5585,7 @@ def _sure_correct_x0(model, x0_hat, sigma_hat_0, s_in, extra_args,
     # ── Gap #5: sigma self-consistency bias correction ────────────────────────
     # SURE is unbiased when σ used in the formula equals the true noise level in
     # x0_hat.  The PCA estimate σ̂₀ may differ from the residual-implied level
-    # σ_res = sqrt(‖r‖²/n).  The bias (proved in SURE_sgps_full.lean §1, theorem
+    # σ_res = sqrt(‖r‖²/n).  The bias (proved in lean_proofs/SGPSProofs/Full.lean §1, theorem
     # sure_sigma_bias_exact) is:
     #   SURE(σ̂₀) − SURE(σ_res) = (σ̂₀² − σ_res²)·(−n + 2·tr_J)
     # Subtracting it gives a bias-corrected value on the σ_res² basis.
@@ -5836,7 +5836,7 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
     eps            = float(x0_hat.abs().max().clamp(min=eps_mc * 1000.0)) / 1000.0
     sigma_denoiser = torch.tensor(sigma_hat_0, device=x0_hat.device, dtype=x0_hat.dtype)
     # Use sigma_denoiser for both base and perturbed calls (same fix as _sure_correct_x0).
-    # SURE_sgps_full.lean §2.1 proves that sigma_p ≠ sigma_denoiser introduces
+    # lean_proofs/SGPSProofs/Full.lean §2.1 proves that sigma_p ≠ sigma_denoiser introduces
     # O(|sigma_p − σ̂₀|/ε) bias in the Hutchinson trace (sigma_inconsistency_bias_structure).
     sigma_p        = sigma_denoiser
     sigma2         = float(sigma_denoiser ** 2)
@@ -6357,7 +6357,7 @@ def _sure_correct_x0_wavelet(model, x0_hat, sigma_hat_0, s_in, extra_args,
     # late steps mean ‖r_k‖² < n_k·σ² — the denoiser residual is below the noise
     # floor, which is expected for a well-trained model (Lean: sure_val_negative_iff_good_denoiser).
     # Pass-through subbands are excluded: their large n_k would otherwise dominate
-    # this sum with irrelevant negative values (see Supplement C in SURE_verification.lean).
+    # this sum with irrelevant negative values (see Supplement C in lean_proofs/SGPSProofs/Verification.lean).
     corrected_sure = sum(corrected_sure_vals)
     passthrough_sure = sum(passthrough_sure_vals)
     if jac_trace is not None:
@@ -7486,7 +7486,7 @@ def sample_sure_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callba
 #   SURE_approx / (n·σ²) = r_ratio² − 1
 # So r_ratio > T  ↔  SURE_approx / (n·σ²) > T²−1.
 # This is the normalised, Jacobian-free SURE estimate of the denoising MSE.
-# The Lean theorem `cond4_step_closer` (SURE_verification.lean) guarantees
+# The Lean theorem `cond4_step_closer` (lean_proofs/SGPSProofs/Verification.lean) guarantees
 # that a positive SURE_approx signals correctable denoising error, making a
 # restart productive rather than wasteful.
 # ---------------------------------------------------------------------------

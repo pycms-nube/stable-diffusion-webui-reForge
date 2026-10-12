@@ -532,7 +532,7 @@ def _build_model_sampling_from_pipe(diffusers_unet, scheduler=None):
     # beta_start/beta_end — this is more accurate than any raw checkpoint tensors
     # which are often stored as BF16.
     #
-    # BF16 storage problem (MODEL_META.md §BF16 / A1111 #14071):
+    # BF16 storage problem (docs/design/MODEL_META.md §BF16 / A1111 #14071):
     #   alphas_cumprod[0] stored as BF16 rounds to 1.0 exactly.
     #   This gives sigma_min = sqrt((1-1)/1) = 0 — catastrophically wrong.
     #   The float32 scheduler recomputation is immune to this.

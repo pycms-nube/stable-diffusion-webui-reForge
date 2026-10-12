@@ -41,7 +41,6 @@ ignore = [
 "webui.py" = ["E402"]  # Module level import not at top of file
 "k_diff/**" = ["F401", "B023", "B028", "B904"]  # upstream k-diffusion code
 "mlx_pipeline/**" = ["F821"]  # mx/torch are optional runtime imports on Apple Silicon
-"typings/**" = ["F821"]  # type stubs — semver etc. are runtime-only names
 "extensions-builtin/forge_legacy_preprocessors/legacy_preprocessors/preprocessor_compiled.py" = ["F403", "F405"]  # star-import by design
 "extensions-builtin/sd_forge_latent_modifier/**" = ["E402"]  # intentional late imports
 "extensions-builtin/sd_forge_multidiffusion/**" = ["E402", "F811"]  # intentional late imports

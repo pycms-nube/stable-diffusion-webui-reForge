@@ -322,7 +322,7 @@ theorem dual_stream_safe_12gib_estimate :
 The GPU schedule above is *semantically neutral* — it says nothing about whether
 the denoiser D_θ correctly estimates the score, whether SURE is unbiased, or
 whether the Jacobian trace is well-approximated.  Those concerns live in the
-`SGPSFull` namespace (SURE_sgps_full.lean / lean_proofs/SGPSProofs/).
+`SGPSFull` namespace (lean_proofs/SGPSProofs/Full.lean).
 
 The formal connection is:
 
