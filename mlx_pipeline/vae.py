@@ -49,13 +49,13 @@ log = logging.getLogger(__name__)
 
 # ── helpers ─────────────────────────────────────────────────────────────────────
 
-def _t2m(t: torch.Tensor) -> "mx.array":
+def _t2m(t: torch.Tensor) -> mx.array:
     """Torch float32 → MLX float32 array (bfloat16 cast at use site)."""
     import mlx.core as mx
     return mx.array(t.detach().float().cpu().numpy())
 
 
-def _conv_w(t: torch.Tensor) -> "mx.array":
+def _conv_w(t: torch.Tensor) -> mx.array:
     """Conv2d weight OIHW → OHWI for MLX."""
     import mlx.core as mx
     arr = t.detach().float().cpu().numpy()
@@ -64,13 +64,13 @@ def _conv_w(t: torch.Tensor) -> "mx.array":
     return mx.array(arr).astype(mx.bfloat16)
 
 
-def _silu(x: "mx.array") -> "mx.array":
+def _silu(x: mx.array) -> mx.array:
     import mlx.nn as nn
     return nn.silu(x)
 
 
-def _group_norm(x: "mx.array", w: "mx.array", b: "mx.array",
-                num_groups: int = 32, eps: float = 1e-6) -> "mx.array":
+def _group_norm(x: mx.array, w: mx.array, b: mx.array,
+                num_groups: int = 32, eps: float = 1e-6) -> mx.array:
     """
     Group normalization on NHWC tensor [N, H, W, C].
 
@@ -102,7 +102,7 @@ class _Conv2d:
     The Downsample path (stride-2 with asymmetric pre-pad) bypasses this
     class and calls mx.conv2d directly.
     """
-    def __init__(self, w: "mx.array", b: "mx.array"):
+    def __init__(self, w: mx.array, b: mx.array):
         import mlx.core as mx
         self.w = w.astype(mx.bfloat16)
         self.b = b.astype(mx.bfloat16)
@@ -110,7 +110,7 @@ class _Conv2d:
         kH = self.w.shape[1]
         self._pad = (kH - 1) // 2    # 0 for 1×1, 1 for 3×3
 
-    def __call__(self, x: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array) -> mx.array:
         import mlx.core as mx
         return mx.conv2d(x, self.w, padding=self._pad) + self.b
 
@@ -143,7 +143,7 @@ class _ResnetBlock:
         else:
             self.skip = None
 
-    def __call__(self, x: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array) -> mx.array:
         h = _group_norm(x, self.norm1_w, self.norm1_b)
         h = _silu(h)
         h = self.conv1(h)
@@ -170,7 +170,7 @@ class _AttnBlock:
         self.v  = _Conv2d(v_w, v_b)
         self.po = _Conv2d(po_w, po_b)
 
-    def __call__(self, x: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array) -> mx.array:
         import mlx.core as mx
         N, H, W, C = x.shape
         h = _group_norm(x, self.norm_w, self.norm_b)
@@ -193,7 +193,7 @@ class _Upsample:
         self._up  = nn.Upsample(scale_factor=2, mode="nearest")
         self.conv = _Conv2d(conv_w, conv_b)
 
-    def __call__(self, x: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array) -> mx.array:
         return self.conv(self._up(x))
 
 
@@ -204,7 +204,7 @@ class _Downsample:
         self.conv_w = conv_w.astype(mx.bfloat16)
         self.conv_b = conv_b.astype(mx.bfloat16)
 
-    def __call__(self, x: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array) -> mx.array:
         import mlx.core as mx
         # Pad right/bottom by 1 to match PyTorch asymmetric padding
         x = mx.pad(x, [(0, 0), (0, 1), (0, 1), (0, 0)])
@@ -268,8 +268,8 @@ class MLXVAEDecoder:
         conv_in:         _Conv2d,
         mid:             _MidBlock,
         up:              list,           # up[0]..up[3], forward order is reversed
-        norm_out_w:      "mx.array",
-        norm_out_b:      "mx.array",
+        norm_out_w:      mx.array,
+        norm_out_b:      mx.array,
         conv_out:        _Conv2d,
     ):
         import mlx.core as mx
@@ -319,8 +319,8 @@ class MLXVAEEncoder:
         conv_in:      _Conv2d,
         down:         list,           # down[0]..down[3] forward order
         mid:          _MidBlock,
-        norm_out_w:   "mx.array",
-        norm_out_b:   "mx.array",
+        norm_out_w:   mx.array,
+        norm_out_b:   mx.array,
         conv_out:     _Conv2d,
         quant_conv:   _Conv2d,
     ):

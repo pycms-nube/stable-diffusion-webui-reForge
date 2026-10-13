@@ -46,7 +46,7 @@ alone — for three situations research/production use turned up:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import jax.numpy as jnp
@@ -328,11 +328,11 @@ def get_default_device():
     return jax.devices()[0]
 
 
-def params_nbytes(params: Dict[str, "jnp.ndarray"]) -> int:
+def params_nbytes(params: dict[str, jnp.ndarray]) -> int:
     return sum(int(v.nbytes) for v in params.values())
 
 
-def should_offload(unet_patcher, params: Dict[str, "jnp.ndarray"], headroom_bytes: int = 1024 * 1024 * 1024) -> bool:
+def should_offload(unet_patcher, params: dict[str, jnp.ndarray], headroom_bytes: int = 1024 * 1024 * 1024) -> bool:
     """Decide whether the JAX UNet params should live in pinned host memory.
 
     Reuses ldm_patched's existing free-VRAM probe (the same one the rest of
@@ -358,7 +358,7 @@ def should_offload(unet_patcher, params: Dict[str, "jnp.ndarray"], headroom_byte
     return offload
 
 
-def place_params(params: Dict[str, "jnp.ndarray"], device, offload: bool) -> Dict[str, "jnp.ndarray"]:
+def place_params(params: dict[str, jnp.ndarray], device, offload: bool) -> dict[str, jnp.ndarray]:
     """Place every array in ``params`` on either pinned host or device memory."""
     import jax
 
@@ -459,7 +459,7 @@ class PhaseManager:
     def __init__(self, device):
         self.device = device
         self.enabled = self._detect_should_manage()
-        self._components: Dict[str, dict] = {}
+        self._components: dict[str, dict] = {}
         self._active: str | None = None
         self._evict_callbacks: list = []
         self._release_callbacks: list = []

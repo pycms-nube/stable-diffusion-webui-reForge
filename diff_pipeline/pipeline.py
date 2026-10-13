@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F
@@ -215,7 +215,7 @@ def _derive_hf_config_from_ldm(merged_unet_cfg: dict) -> tuple[dict, list[str]]:
 # V-prediction + ZeroSNR helpers
 # ---------------------------------------------------------------------------
 
-def _rescale_zero_terminal_snr_sigmas(sigmas: "torch.Tensor") -> "torch.Tensor":
+def _rescale_zero_terminal_snr_sigmas(sigmas: torch.Tensor) -> torch.Tensor:
     """Rescale a sigma schedule to enforce zero terminal SNR (Lin et al. 2023).
 
     Equivalent to nodes_model_advanced.rescale_zero_terminal_snr_sigmas.
@@ -599,7 +599,7 @@ class ForgeAttnProcessor:
 # Inference headroom helper used by _should_use_lru
 # ---------------------------------------------------------------------------
 
-def _inference_headroom(x: Optional["torch.Tensor"] = None) -> int:
+def _inference_headroom(x: torch.Tensor | None = None) -> int:
     """Return bytes to reserve for activations during inference.
 
     Base = reForge's minimum_inference_memory() (~1 GiB), overridable via
@@ -637,7 +637,7 @@ def _inference_headroom(x: Optional["torch.Tensor"] = None) -> int:
 # Standalone auto-offload helper (used by both DiffPipeline and the hijack path)
 # ---------------------------------------------------------------------------
 
-def apply_auto_offload_to_unet(hf_unet, device: "torch.device"):
+def apply_auto_offload_to_unet(hf_unet, device: torch.device):
     """Partition an HF UNet2DConditionModel into Group A (device) and Group B (CPU)
     using infer_auto_device_map, then install forward pre/post hooks on Group B so
     each block is streamed to the compute device only while it runs.
@@ -647,7 +647,7 @@ def apply_auto_offload_to_unet(hf_unet, device: "torch.device"):
     from accelerate import infer_auto_device_map
 
     device_key = str(device)
-    max_memory: Optional[Dict[Union[int, str], Union[int, str]]]
+    max_memory: dict[int | str, int | str] | None
     if device.type == "cuda":
         free_bytes, _ = torch.cuda.mem_get_info(device)
         max_memory = {device_key: int(free_bytes * 0.85), "cpu": "48GiB"}
@@ -721,7 +721,7 @@ def apply_auto_offload_to_unet(hf_unet, device: "torch.device"):
 # DiffPipeline
 # ---------------------------------------------------------------------------
 
-class DiffPipeline():
+class DiffPipeline:
     """Diffusers-based SDXL pipeline.
 
     Wraps a ``UnetPatcher`` and replaces the ldm-patched
@@ -746,7 +746,7 @@ class DiffPipeline():
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_hf_unet(cls, hf_unet, unet_patcher, sd_model) -> "DiffPipeline":
+    def from_hf_unet(cls, hf_unet, unet_patcher, sd_model) -> DiffPipeline:
         """Create a DiffPipeline from an already-loaded HF UNet2DConditionModel.
 
         Unlike the normal constructor this skips the ldm→HF weight conversion
@@ -865,7 +865,7 @@ class DiffPipeline():
         self._regions_installed: bool = False  # True once nested_compile_region / per-block compile has run
 
         # VRAMAllocator — used on the default path when VRAM is insufficient.
-        self._vram_allocator: Optional[VRAMAllocator] = None
+        self._vram_allocator: VRAMAllocator | None = None
         self._lru_block_names: list = []
         self._lru_ready: bool = False  # True once _setup_lru_offload has run
         # Set of top-level HF UNet child names that are managed as LRU blocks.
@@ -878,7 +878,7 @@ class DiffPipeline():
 
         # Tensor Core optimisation state — populated lazily on first apply_model() call.
         self._tc_ready: bool = False
-        self._autocast_dtype: Optional[torch.dtype] = None  # set by _maybe_setup_tensor_core_opts
+        self._autocast_dtype: torch.dtype | None = None  # set by _maybe_setup_tensor_core_opts
 
         self._hf_unet: UNet2DConditionModel
         log.info("DiffPipeline: building HF UNet2DConditionModel from checkpoint weights …")
@@ -990,7 +990,7 @@ class DiffPipeline():
     # Construction helpers
     # ------------------------------------------------------------------
 
-    def _build_hf_unet(self, ldm_model) -> "UNet2DConditionModel":
+    def _build_hf_unet(self, ldm_model) -> UNet2DConditionModel:
         """Convert ldm SDXL state dict → HF UNet2DConditionModel."""
         from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
         from ldm_patched.modules.utils import unet_to_diffusers
@@ -1267,7 +1267,7 @@ class DiffPipeline():
                 - _stats["active_bytes.all.current"]
             )
             max_vram = int(free_bytes * 0.85)
-            max_memory: Optional[dict] = {device_key: max_vram, "cpu": "48GiB"}
+            max_memory: dict | None = {device_key: max_vram, "cpu": "48GiB"}
             self._vram_at_partition = free_bytes
             log.info(
                 "DiffPipeline auto-offload: VRAM free=%.0f MB  "
@@ -1415,7 +1415,7 @@ class DiffPipeline():
     # LRU dynamic block loading (default path when VRAM is insufficient)
     # ------------------------------------------------------------------
 
-    def _should_use_lru(self, device: torch.device, x: Optional["torch.Tensor"] = None) -> bool:
+    def _should_use_lru(self, device: torch.device, x: torch.Tensor | None = None) -> bool:
         """Return True when the whole HF UNet does not fit in available VRAM.
 
         Uses the same free-memory formula as model_management.get_free_memory().
@@ -1467,7 +1467,7 @@ class DiffPipeline():
         )
         return False
 
-    def _setup_lru_offload(self, device: torch.device, x: Optional["torch.Tensor"] = None) -> None:
+    def _setup_lru_offload(self, device: torch.device, x: torch.Tensor | None = None) -> None:
         """Set up VRAMAllocator-based LRU block loading.
 
         Non-block UNet modules (conv_in, time_embedding, add_embedding,
@@ -1557,7 +1557,7 @@ class DiffPipeline():
             len(block_list), device, headroom >> 20,
         )
 
-    def flush_lru_to_cpu(self, device: Optional[torch.device] = None) -> None:
+    def flush_lru_to_cpu(self, device: torch.device | None = None) -> None:
         """Evict all LRU-resident UNet blocks back to CPU.
 
         Called by model_management's VRAM pressure hook when VAE or CLIP
@@ -1786,7 +1786,7 @@ class DiffPipeline():
     # Public interface (mirrors BaseModel.apply_model signature)
     # ------------------------------------------------------------------
 
-    def _maybe_setup_tensor_core_opts(self, device: "torch.device", unet_dtype: "torch.dtype") -> None:
+    def _maybe_setup_tensor_core_opts(self, device: torch.device, unet_dtype: torch.dtype) -> None:
         """Detect GPU Tensor Core capability and apply compatible optimisations once.
 
         Called lazily on the first ``apply_model()`` after device placement so
@@ -2087,7 +2087,7 @@ class DiffPipeline():
         # --- 4. ControlNet residual mapping ---
         # ldm: control["input"] is a list that gets pop()d (reverse order).
         # HF:  down_block_additional_residuals is a tuple in forward order.
-        down_block_residuals: Optional[tuple] = None
+        down_block_residuals: tuple | None = None
         mid_block_residual = None
 
         if control is not None:
@@ -2292,7 +2292,7 @@ class DiffPipeline():
     # Diffusers optimization injection point
     # ------------------------------------------------------------------
 
-    def get_pipeline(self) -> "UNet2DConditionModel":
+    def get_pipeline(self) -> UNet2DConditionModel:
         """Return the underlying HF ``UNet2DConditionModel``.
 
         Use this to apply Diffusers-level optimizations before inference,
@@ -2307,7 +2307,7 @@ class DiffPipeline():
         """
         return self._hf_unet
 
-    def apply_diffusers_optimization(self, _hf_unet: "UNet2DConditionModel") -> None:
+    def apply_diffusers_optimization(self, _hf_unet: UNet2DConditionModel) -> None:
         """Stub — override or monkey-patch this to inject custom Diffusers optimizations.
 
         Called once per ``apply_model()`` invocation, after the UNet has been

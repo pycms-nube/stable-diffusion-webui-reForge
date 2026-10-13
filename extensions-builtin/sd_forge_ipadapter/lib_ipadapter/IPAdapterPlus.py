@@ -586,7 +586,7 @@ class IPAdapterModelLoader:
             model = st_model
 
         if "ip_adapter" not in model.keys() or not model["ip_adapter"]:
-            raise Exception("invalid IPAdapter model {}".format(ckpt_path))
+            raise Exception(f"invalid IPAdapter model {ckpt_path}")
 
         return (model,)
 

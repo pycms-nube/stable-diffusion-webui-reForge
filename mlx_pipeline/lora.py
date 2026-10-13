@@ -47,7 +47,6 @@ Performance
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -110,8 +109,8 @@ def reload_mlx_unet_weights(mlx_unet, unet_patcher) -> None:
 
 def clip_weight_fingerprint(
     transformer,
-    text_projection: Optional["torch.Tensor"] = None,
-) -> Tuple[float, ...]:
+    text_projection: torch.Tensor | None = None,
+) -> tuple[float, ...]:
     """Return a cheap fingerprint of CLIP transformer weights.
 
     Samples a handful of representative values from the first and last
@@ -134,7 +133,7 @@ def clip_weight_fingerprint(
         layers = transformer.text_model.encoder.layers
         q0 = layers[0].self_attn.q_proj.weight
         qN = layers[-1].self_attn.q_proj.weight
-        fp: Tuple[float, ...] = (
+        fp: tuple[float, ...] = (
             float(q0[0, 0].item()),
             float(q0[-1, -1].item()),
             float(qN[0, 0].item()),

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import jax.numpy as jnp
@@ -45,8 +45,8 @@ log = logging.getLogger(__name__)
 
 
 def partition_params_by_block(
-    params: Dict[str, "jnp.ndarray"], block_ids: List[str],
-) -> Dict[str, Dict[str, "jnp.ndarray"]]:
+    params: dict[str, jnp.ndarray], block_ids: list[str],
+) -> dict[str, dict[str, jnp.ndarray]]:
     """Split a flat ``{absolute_hf_key: array}`` dict into
     ``{block_id: {absolute_hf_key: array}}`` sub-dicts, one per entry in
     ``block_ids`` — a key belongs to ``block_id`` when it equals it or
@@ -60,16 +60,16 @@ def partition_params_by_block(
     silently-wrong image generation is a much worse failure mode than a
     loud error at pipeline-build time.
     """
-    partitioned: Dict[str, Dict[str, "jnp.ndarray"]] = {bid: {} for bid in block_ids}
+    partitioned: dict[str, dict[str, jnp.ndarray]] = {bid: {} for bid in block_ids}
     # Longest-prefix-first so a more specific block_id is preferred over a
     # shorter one that could also technically match (defensive — the
     # actual registry is disjoint by construction, but this keeps the
     # function correct even if that ever changes).
     sorted_ids = sorted(block_ids, key=len, reverse=True)
 
-    unassigned: List[str] = []
+    unassigned: list[str] = []
     for key, value in params.items():
-        matched: Optional[str] = None
+        matched: str | None = None
         for bid in sorted_ids:
             if key == bid or key.startswith(bid + "."):
                 matched = bid
@@ -113,15 +113,15 @@ class BlockParamCache:
     #: rate), matching the whole point of this cache.
     _DEFAULT_BUDGET_BLOCK_MULTIPLE = 3
 
-    def __init__(self, device, budget_bytes: Optional[int] = None):
+    def __init__(self, device, budget_bytes: int | None = None):
         self.device = device
         self.budget_bytes = budget_bytes  # resolved to a concrete value in load() if None
-        self._host_store: Dict[str, Dict[str, "jnp.ndarray"]] = {}
-        self._host_bytes: Dict[str, int] = {}
-        self._resident: "OrderedDict[str, Dict[str, jnp.ndarray]]" = OrderedDict()
+        self._host_store: dict[str, dict[str, jnp.ndarray]] = {}
+        self._host_bytes: dict[str, int] = {}
+        self._resident: OrderedDict[str, dict[str, jnp.ndarray]] = OrderedDict()
         self._resident_bytes = 0
 
-    def load(self, block_params: Dict[str, Dict[str, "jnp.ndarray"]]) -> None:
+    def load(self, block_params: dict[str, dict[str, jnp.ndarray]]) -> None:
         """(Re)populate the pinned-host store from freshly partitioned
         params (see ``partition_params_by_block``) — call at pipeline
         build time and again after any LoRA reload. Drops whatever was
@@ -177,7 +177,7 @@ class BlockParamCache:
         self._resident.clear()
         self._resident_bytes = 0
 
-    def get(self, block_id: str) -> Dict[str, "jnp.ndarray"]:
+    def get(self, block_id: str) -> dict[str, jnp.ndarray]:
         if block_id in self._resident:
             self._resident.move_to_end(block_id)  # mark most-recently-used
             from jax_pipeline import _debug_profile

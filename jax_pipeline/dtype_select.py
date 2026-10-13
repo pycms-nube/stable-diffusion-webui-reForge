@@ -39,7 +39,6 @@ about this rather than silently making the swap.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -54,10 +53,10 @@ _warned_fp16_fallback = {"shown": False}
 #: component's dtype through after a real NaN/Inf is observed in its
 #: output. float32 is the ceiling: full range AND full precision, no
 #: further escalation possible.
-DTYPE_SAFETY_LADDER: Tuple[str, ...] = ("float16", "bfloat16", "float32")
+DTYPE_SAFETY_LADDER: tuple[str, ...] = ("float16", "bfloat16", "float32")
 
 
-def escalate_dtype(current_name: str) -> Optional[str]:
+def escalate_dtype(current_name: str) -> str | None:
     """Return the next-safer dtype name after ``current_name`` on
     ``DTYPE_SAFETY_LADDER``, or None if already at the safest (float32)
     — meaning there's nothing left to escalate TO; the caller should
@@ -77,7 +76,7 @@ def dtype_by_name(name: str):
     return {"bfloat16": jnp.bfloat16, "float16": jnp.float16, "float32": jnp.float32}[name]
 
 
-def _cuda_compute_capability(torch_device) -> Optional[Tuple[int, int]]:
+def _cuda_compute_capability(torch_device) -> tuple[int, int] | None:
     """(major, minor) NVIDIA compute capability for ``torch_device``, or
     None if this isn't a genuine NVIDIA CUDA device.
 

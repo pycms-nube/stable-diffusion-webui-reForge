@@ -1,5 +1,4 @@
 import gradio as gr
-from typing import List
 
 
 class ModalInterface(gr.Interface):
@@ -9,7 +8,7 @@ class ModalInterface(gr.Interface):
         self,
         html_content: str,
         open_button_text: str,
-        open_button_classes: List[str] = None,
+        open_button_classes: list[str] = None,
         open_button_extra_attrs: str = ''
     ):
         self.html_content = html_content

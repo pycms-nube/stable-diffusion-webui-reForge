@@ -58,12 +58,11 @@ from __future__ import annotations
 
 import functools
 import math
-from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 
-Params = Dict[str, "jnp.ndarray"]
+Params = dict[str, "jnp.ndarray"]
 
 # ── SDXL fixed config ─────────────────────────────────────────────────────────
 _BLOCK_OUT_CHANNELS = [320, 640, 1280]
@@ -84,22 +83,22 @@ def _num_heads(channels: int) -> int:
 #  Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _silu(x: "jnp.ndarray") -> "jnp.ndarray":
+def _silu(x: jnp.ndarray) -> jnp.ndarray:
     return jax.nn.silu(x)
 
 
-def _gelu(x: "jnp.ndarray") -> "jnp.ndarray":
+def _gelu(x: jnp.ndarray) -> jnp.ndarray:
     # approximate=False => exact erf-based GELU, matching PyTorch's default
     # nn.GELU() (no "tanh" approximation) used by HF diffusers' GEGLU.
     return jax.nn.gelu(x, approximate=False)
 
 
 def _sinusoidal_embedding(
-    timesteps: "jnp.ndarray",
+    timesteps: jnp.ndarray,
     dim: int,
     flip_sin_to_cos: bool = True,
     downscale_freq_shift: float = 0.0,
-) -> "jnp.ndarray":
+) -> jnp.ndarray:
     """Sinusoidal (Fourier) timestep embedding — no learnable parameters.
 
     Matches HuggingFace ``Timesteps`` / ``get_timestep_embedding``.
@@ -115,7 +114,7 @@ def _sinusoidal_embedding(
     return emb  # [B, dim]
 
 
-def _upsample2x(x: "jnp.ndarray") -> "jnp.ndarray":
+def _upsample2x(x: jnp.ndarray) -> jnp.ndarray:
     """Nearest-neighbour 2x upsampling for NHWC tensors."""
     x = jnp.repeat(x, 2, axis=1)
     x = jnp.repeat(x, 2, axis=2)
@@ -137,7 +136,7 @@ def _softmax_attention(q, k, v, scale: float):
     return jnp.einsum("bhqk,bhkd->bhqd", attn, v)
 
 
-def _pick_kv_chunk_size(total: int, target: int = 512, min_chunk: int = 64) -> Optional[int]:
+def _pick_kv_chunk_size(total: int, target: int = 512, min_chunk: int = 64) -> int | None:
     """Largest exact divisor of ``total`` that's <= ``target`` and >=
     ``min_chunk``, or None if none exists (or ``total`` is already <=
     ``target``, where chunking wouldn't reduce peak memory anyway).
@@ -389,7 +388,7 @@ def downsample_2d(params: Params, prefix: str, x):
     return conv2d(params, f"{prefix}.conv", x, stride=2, padding=1)
 
 
-def upsample_2d(params: Params, prefix: str, x, target_hw: Optional[tuple] = None):
+def upsample_2d(params: Params, prefix: str, x, target_hw: tuple | None = None):
     """Upsample, then conv.
 
     SDXL/SD1.5 assume pixel resolution is a multiple of 64 (latent
@@ -433,7 +432,7 @@ def upsample_2d(params: Params, prefix: str, x, target_hw: Optional[tuple] = Non
 
 def down_block2d(params: Params, prefix: str, x, temb, num_layers: int):
     """Pure-ResNet down block (no attention) — SDXL level 0 (ch=320)."""
-    skips: List = []
+    skips: list = []
     for i in range(num_layers):
         x = resnet_block(params, f"{prefix}.resnets.{i}", x, temb)
         skips.append(x)
@@ -446,7 +445,7 @@ def cross_attn_down_block2d(
     params: Params, prefix: str, x, temb, encoder_hidden_states,
     num_layers: int, num_attn_layers: int, num_heads: int, add_downsample: bool,
 ):
-    skips: List = []
+    skips: list = []
     for i in range(num_layers):
         x = resnet_block(params, f"{prefix}.resnets.{i}", x, temb)
         x = transformer_2d(params, f"{prefix}.attentions.{i}", x, encoder_hidden_states, num_heads, num_attn_layers)
@@ -466,9 +465,9 @@ def mid_block(params: Params, prefix: str, x, temb, encoder_hidden_states, num_h
 
 
 def cross_attn_up_block2d(
-    params: Params, prefix: str, x, temb, encoder_hidden_states, res_samples: List,
+    params: Params, prefix: str, x, temb, encoder_hidden_states, res_samples: list,
     num_layers: int, num_attn_layers: int, num_heads: int, add_upsample: bool,
-    target_hw: Optional[tuple] = None,
+    target_hw: tuple | None = None,
 ):
     for i in range(num_layers):
         x = jnp.concatenate([x, res_samples[i]], axis=-1)
@@ -480,8 +479,8 @@ def cross_attn_up_block2d(
 
 
 def up_block2d(
-    params: Params, prefix: str, x, temb, res_samples: List, num_layers: int, add_upsample: bool,
-    target_hw: Optional[tuple] = None,
+    params: Params, prefix: str, x, temb, res_samples: list, num_layers: int, add_upsample: bool,
+    target_hw: tuple | None = None,
 ):
     """Pure-ResNet up block — SDXL level 2 (ch=320), no attention."""
     for i in range(num_layers):
@@ -528,11 +527,11 @@ def add_embedding(params: Params, prefix: str, text_embeds, time_ids, time_embed
 
 def unet_forward(
     params: Params,
-    sample: "jnp.ndarray",                 # [B, 4, H, W]  NCHW
-    timestep: "jnp.ndarray",               # [B]
-    encoder_hidden_states: "jnp.ndarray",  # [B, S, 2048]
-    added_cond_kwargs: Dict[str, "jnp.ndarray"],  # {"text_embeds": [B,1280], "time_ids": [B,6]}
-) -> "jnp.ndarray":
+    sample: jnp.ndarray,                 # [B, 4, H, W]  NCHW
+    timestep: jnp.ndarray,               # [B]
+    encoder_hidden_states: jnp.ndarray,  # [B, S, 2048]
+    added_cond_kwargs: dict[str, jnp.ndarray],  # {"text_embeds": [B,1280], "time_ids": [B,6]}
+) -> jnp.ndarray:
     """SDXL UNet2DConditionModel forward pass. Call signature mirrors HF
     UNet2DConditionModel.__call__. Not jit-wrapped itself — see
     ``unet_forward_jit`` (no host offload) or ``jax_pipeline.host_offload``
@@ -561,7 +560,7 @@ def unet_forward(
     sample = conv2d(params, "conv_in", sample, stride=1, padding=1)
 
     # 5. Down path — collect ALL skip connections (including conv_in output)
-    down_block_res_samples: List = [sample]
+    down_block_res_samples: list = [sample]
 
     sample, skips = down_block2d(params, "down_blocks.0", sample, temb, _LAYERS_PER_BLOCK)
     down_block_res_samples.extend(skips)
@@ -738,7 +737,7 @@ _jit_upsample_2d = _timed_jit(jax.jit(upsample_2d, static_argnames=("prefix", "t
 
 # ── block registry ──────────────────────────────────────────────────────────
 
-def _transformer_2d_block_ids(prefix: str, num_layers: int) -> List[str]:
+def _transformer_2d_block_ids(prefix: str, num_layers: int) -> list[str]:
     """Every streaming block_id one transformer_2d call site needs — the
     norm+proj_in and proj_out wrapper stages, plus one id per individual
     basic_transformer_block (the fine-grained split that keeps SDXL's
@@ -752,7 +751,7 @@ def _transformer_2d_block_ids(prefix: str, num_layers: int) -> List[str]:
     return ids
 
 
-def build_block_ids() -> List[str]:
+def build_block_ids() -> list[str]:
     """Enumerate every streaming block_id covering the UNet's full
     parameter space, walked in the SAME down -> mid -> up structure
     unet_forward/unet_forward_streaming use. Must stay in exact sync with
@@ -844,7 +843,7 @@ def _transformer_2d_streaming(cache, prefix: str, hidden_states, encoder_hidden_
 
 
 def _down_block2d_streaming(cache, prefix: str, x, temb, num_layers: int):
-    skips: List = []
+    skips: list = []
     for i in range(num_layers):
         rp = f"{prefix}.resnets.{i}"
         x = _jit_resnet_block(cache.get(rp), hidden_states=x, temb=temb, prefix=rp)
@@ -859,7 +858,7 @@ def _cross_attn_down_block2d_streaming(
     cache, prefix: str, x, temb, encoder_hidden_states,
     num_layers: int, num_attn_layers: int, num_heads: int, add_downsample: bool,
 ):
-    skips: List = []
+    skips: list = []
     for i in range(num_layers):
         rp = f"{prefix}.resnets.{i}"
         x = _jit_resnet_block(cache.get(rp), hidden_states=x, temb=temb, prefix=rp)
@@ -884,9 +883,9 @@ def _mid_block_streaming(cache, prefix: str, x, temb, encoder_hidden_states, num
 
 
 def _cross_attn_up_block2d_streaming(
-    cache, prefix: str, x, temb, encoder_hidden_states, res_samples: List,
+    cache, prefix: str, x, temb, encoder_hidden_states, res_samples: list,
     num_layers: int, num_attn_layers: int, num_heads: int, add_upsample: bool,
-    target_hw: Optional[Tuple[int, int]] = None,
+    target_hw: tuple[int, int] | None = None,
 ):
     for i in range(num_layers):
         x = jnp.concatenate([x, res_samples[i]], axis=-1)
@@ -901,8 +900,8 @@ def _cross_attn_up_block2d_streaming(
 
 
 def _up_block2d_streaming(
-    cache, prefix: str, x, temb, res_samples: List, num_layers: int, add_upsample: bool,
-    target_hw: Optional[Tuple[int, int]] = None,
+    cache, prefix: str, x, temb, res_samples: list, num_layers: int, add_upsample: bool,
+    target_hw: tuple[int, int] | None = None,
 ):
     for i in range(num_layers):
         x = jnp.concatenate([x, res_samples[i]], axis=-1)
@@ -916,11 +915,11 @@ def _up_block2d_streaming(
 
 def unet_forward_streaming(
     cache,
-    sample: "jnp.ndarray",
-    timestep: "jnp.ndarray",
-    encoder_hidden_states: "jnp.ndarray",
-    added_cond_kwargs: Dict[str, "jnp.ndarray"],
-) -> "jnp.ndarray":
+    sample: jnp.ndarray,
+    timestep: jnp.ndarray,
+    encoder_hidden_states: jnp.ndarray,
+    added_cond_kwargs: dict[str, jnp.ndarray],
+) -> jnp.ndarray:
     """Block-streaming counterpart of unet_forward — identical math and
     control flow, sourced from ``cache`` (a
     jax_pipeline.block_cache.BlockParamCache already loaded with this
@@ -954,7 +953,7 @@ def unet_forward_streaming(
 
     sample = _jit_conv2d(cache.get("conv_in"), x=sample, prefix="conv_in", stride=1, padding=1)
 
-    down_block_res_samples: List = [sample]
+    down_block_res_samples: list = [sample]
 
     sample, skips = _down_block2d_streaming(cache, "down_blocks.0", sample, temb, _LAYERS_PER_BLOCK)
     down_block_res_samples.extend(skips)
@@ -1061,7 +1060,7 @@ _jit_up_block2d = _timed_jit(jax.jit(
 ))
 
 
-def build_block_ids_coarse() -> List[str]:
+def build_block_ids_coarse() -> list[str]:
     """Coarse-granularity streaming block_ids — one per down/mid/up STAGE
     instead of one per micro-block. ``partition_params_by_block`` needs
     no changes to support this: it already assigns every param key to
@@ -1081,11 +1080,11 @@ def build_block_ids_coarse() -> List[str]:
 
 def unet_forward_streaming_coarse(
     cache,
-    sample: "jnp.ndarray",
-    timestep: "jnp.ndarray",
-    encoder_hidden_states: "jnp.ndarray",
-    added_cond_kwargs: Dict[str, "jnp.ndarray"],
-) -> "jnp.ndarray":
+    sample: jnp.ndarray,
+    timestep: jnp.ndarray,
+    encoder_hidden_states: jnp.ndarray,
+    added_cond_kwargs: dict[str, jnp.ndarray],
+) -> jnp.ndarray:
     """Coarse-streaming counterpart of unet_forward_streaming — identical
     math and control flow (copied from unet_forward), sourced from
     ``cache`` one STAGE at a time instead of one micro-block at a time.
@@ -1111,7 +1110,7 @@ def unet_forward_streaming_coarse(
 
     sample = _jit_conv2d(cache.get("conv_in"), x=sample, prefix="conv_in", stride=1, padding=1)
 
-    down_block_res_samples: List = [sample]
+    down_block_res_samples: list = [sample]
 
     sample, skips = _jit_down_block2d(
         cache.get("down_blocks.0"), x=sample, temb=temb,

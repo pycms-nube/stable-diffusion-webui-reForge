@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -80,7 +80,7 @@ _NORM_EPS = 1e-6  # VAE GroupNorm eps differs from UNet's 1e-5
 
 # SDXL KL-F8 ddconfig: ch=128, ch_mult=[1,2,4,4] -> per-level channel counts.
 # Matches diff_pipeline/adapter.py's fallback default for the same formula.
-_BLOCK_OUT_CHANNELS: Tuple[int, ...] = (128, 256, 512, 512)
+_BLOCK_OUT_CHANNELS: tuple[int, ...] = (128, 256, 512, 512)
 
 # Hard cap on the (latent-space) tile size jax_decode_tiled will ever use,
 # regardless of what model_management.VAE_DECODE_TILE_SIZE_X/Y reports.
@@ -95,7 +95,7 @@ _JAX_VAE_MAX_TILE = 64
 
 # -- conversion ----------------------------------------------------------------
 
-def _tensor_to_jax(tensor: "torch.Tensor", dtype, sharding=None):
+def _tensor_to_jax(tensor: torch.Tensor, dtype, sharding=None):
     """``sharding``, when given, is passed as ``jnp.asarray``'s ``device=``
     argument so the array lands directly where the caller wants it (e.g.
     pinned host memory, on a phase-managed card) rather than defaulting
@@ -112,7 +112,7 @@ def _tensor_to_jax(tensor: "torch.Tensor", dtype, sharding=None):
     return jnp.asarray(arr, dtype=dtype, device=sharding)
 
 
-def load_vae_params(first_stage_model, dtype=None, sharding=None) -> Dict[str, "jnp.ndarray"]:
+def load_vae_params(first_stage_model, dtype=None, sharding=None) -> dict[str, jnp.ndarray]:
     import jax.numpy as jnp
 
     if dtype is None:
@@ -121,7 +121,7 @@ def load_vae_params(first_stage_model, dtype=None, sharding=None) -> Dict[str, "
     return {k: _tensor_to_jax(v, dtype, sharding=sharding) for k, v in sd.items()}
 
 
-def _detect_decoder_arch(sd_state: Dict[str, "torch.Tensor"]):
+def _detect_decoder_arch(sd_state: dict[str, torch.Tensor]):
     max_up_level = max(int(k.split(".")[2]) for k in sd_state if k.startswith("decoder.up."))
     num_up = max_up_level + 1
     num_res = max(
@@ -266,7 +266,7 @@ def make_decode_jit(num_up: int, num_res: int):
 def estimate_decode_peak_bytes(
     latent_shape,
     elem_bytes: int,
-    block_out_channels: Tuple[int, ...] = _BLOCK_OUT_CHANNELS,
+    block_out_channels: tuple[int, ...] = _BLOCK_OUT_CHANNELS,
 ) -> int:
     """Rough peak-activation estimate for a full-resolution VAE decode.
 
@@ -332,7 +332,7 @@ def _jax_tile_decode_fn(decode_jit, params, tile_h: int, tile_w: int, dtype=None
 
     compute_dtype = dtype if dtype is not None else jnp.bfloat16
 
-    def decode_fn(tile: "torch.Tensor") -> "torch.Tensor":
+    def decode_fn(tile: torch.Tensor) -> torch.Tensor:
         _, _, th, tw = tile.shape
         pad_h = max(0, tile_h - th)
         pad_w = max(0, tile_w - tw)
@@ -354,9 +354,9 @@ def _jax_tile_decode_fn(decode_jit, params, tile_h: int, tile_w: int, dtype=None
 
 
 def jax_decode_tiled(
-    decode_jit, params, z: "torch.Tensor",
+    decode_jit, params, z: torch.Tensor,
     tile_x: int = None, tile_y: int = None, overlap: int = 16, dtype=None,
-) -> "torch.Tensor":
+) -> torch.Tensor:
     """Tiled VAE decode driven entirely by JAX per tile.
 
     Reuses ``ldm_patched.modules.utils.tiled_scale`` — the same proven
@@ -494,7 +494,7 @@ def install_vae_hooks(sd_model, forge_objects=None, phase_manager=None) -> bool:
             "dtype_name": vae_dtype_name,
         }
 
-        def _escalate_vae_dtype() -> Optional[str]:
+        def _escalate_vae_dtype() -> str | None:
             """handle_jax_nan's remediation callback: bump _state's
             dtype up dtype_select.DTYPE_SAFETY_LADDER and reconvert the
             VAE's weights at the new (safer) dtype, so the NEXT decode

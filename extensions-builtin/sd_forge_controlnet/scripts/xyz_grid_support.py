@@ -53,7 +53,7 @@ def is_all_included(target_list, check_list, allow_blank=False, stop=False):
     return True
 
 
-class ListParser():
+class ListParser:
     """This class restores a broken list caused by the following process
     in the xyz_grid module.
         -> valslist = [x.strip() for x in chain.from_iterable(

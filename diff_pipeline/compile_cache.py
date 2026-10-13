@@ -45,7 +45,6 @@ import logging
 import os
 import shutil
 import sys
-from typing import Optional
 
 import torch  # type: ignore[import-not-found]
 
@@ -135,7 +134,7 @@ def _void_cache(cache_dir: str) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def activate(model_shorthash: str, device: torch.device) -> Optional[str]:
+def activate(model_shorthash: str, device: torch.device) -> str | None:
     """Set TORCHINDUCTOR_CACHE_DIR to the model-specific compile cache dir.
 
     Steps
@@ -176,7 +175,7 @@ def activate(model_shorthash: str, device: torch.device) -> Optional[str]:
     # --- 1. Validate existing fingerprint ---
     if os.path.exists(fp_path):
         try:
-            with open(fp_path, "r", encoding="utf-8") as fh:
+            with open(fp_path, encoding="utf-8") as fh:
                 stored_fp = json.load(fh)
         except Exception as exc:
             log.warning(

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from transformers.models.clip.modeling_clip import CLIPVisionModelOutput
 
 from annotator.util import HWC3
-from typing import Callable, Tuple, Union
+from collections.abc import Callable
 
 from modules.safe import Extra
 from modules import devices
@@ -276,7 +276,7 @@ def unload_leres():
         unload_leres_model()
 
 
-class OpenposeModel(object):
+class OpenposeModel:
     def __init__(self) -> None:
         self.model_openpose = None
 
@@ -291,7 +291,7 @@ class OpenposeModel(object):
             json_pose_callback: Callable[[str], None] = None,
             res: int = 512,
             **kwargs  # Ignore rest of kwargs
-    ) -> Tuple[np.ndarray, bool]:
+    ) -> tuple[np.ndarray, bool]:
         """Run the openpose model. Returns a tuple of
         - result image
         - is_image flag
@@ -768,7 +768,7 @@ class InsightFaceModel:
             )
             self.model.prepare(ctx_id=0, det_size=(640, 640))
 
-    def run_model(self, img: np.ndarray, **kwargs) -> Tuple[torch.Tensor, bool]:
+    def run_model(self, img: np.ndarray, **kwargs) -> tuple[torch.Tensor, bool]:
         self.load_model()
         img = HWC3(img)
         faces = self.model.get(img)
@@ -785,7 +785,7 @@ class InsightFaceModel:
         res: int = 512,
         return_keypoints: bool = False,
         **kwargs
-    ) -> Tuple[Union[np.ndarray, torch.Tensor], bool]:
+    ) -> tuple[np.ndarray | torch.Tensor, bool]:
         """Run the insightface model for instant_id.
         Arguments:
             - img: Input image in any size.

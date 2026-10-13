@@ -29,7 +29,6 @@ SDXL fixed config (stabilityai/stable-diffusion-xl-base-1.0):
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -128,7 +127,7 @@ class Attention(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,           # [B, Sq, D]
-        encoder_hidden_states: Optional[mx.array] = None,  # [B, Sk, ctx]
+        encoder_hidden_states: mx.array | None = None,  # [B, Sk, ctx]
     ) -> mx.array:
         B, Sq, _ = hidden_states.shape
         context = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
@@ -222,7 +221,7 @@ class BasicTransformerBlock(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,                         # [B, seq, dim]
-        encoder_hidden_states: Optional[mx.array] = None,  # [B, ctx, 2048]
+        encoder_hidden_states: mx.array | None = None,  # [B, ctx, 2048]
     ) -> mx.array:
         # Self-attention (pre-norm)
         h = self.norm1(hidden_states)
@@ -265,7 +264,7 @@ class Transformer2DModel(nn.Module):
         # GroupNorm: pytorch_compatible=True matches PyTorch's grouping order (normalise over H*W*C/G)
         self.norm = nn.GroupNorm(32, channels, pytorch_compatible=True)
         self.proj_in = nn.Linear(channels, channels)
-        self.transformer_blocks: List[BasicTransformerBlock] = [
+        self.transformer_blocks: list[BasicTransformerBlock] = [
             BasicTransformerBlock(channels, num_heads)
             for _ in range(num_layers)
         ]
@@ -274,7 +273,7 @@ class Transformer2DModel(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,                         # [B, H, W, C]  NHWC
-        encoder_hidden_states: Optional[mx.array] = None,  # [B, ctx, 2048]
+        encoder_hidden_states: mx.array | None = None,  # [B, ctx, 2048]
     ) -> mx.array:
         B, H, W, C = hidden_states.shape
         residual = hidden_states
@@ -384,12 +383,12 @@ class DownBlock2D(nn.Module):
                 in_channels if i == 0 else out_channels,
                 out_channels,
             ))
-        self.resnets: List[ResnetBlock2D] = resnets
+        self.resnets: list[ResnetBlock2D] = resnets
         self.downsamplers = [Downsample2D(out_channels)]
 
     def __call__(
         self, x: mx.array, temb: mx.array
-    ) -> Tuple[mx.array, List[mx.array]]:
+    ) -> tuple[mx.array, list[mx.array]]:
         skips = []
         for resnet in self.resnets:
             x = resnet(x, temb)
@@ -428,8 +427,8 @@ class CrossAttnDownBlock2D(nn.Module):
             ch_in = in_channels if i == 0 else out_channels
             resnets.append(ResnetBlock2D(ch_in, out_channels))
             attentions.append(Transformer2DModel(out_channels, num_heads, num_attn_layers))
-        self.resnets: List[ResnetBlock2D] = resnets
-        self.attentions: List[Transformer2DModel] = attentions
+        self.resnets: list[ResnetBlock2D] = resnets
+        self.attentions: list[Transformer2DModel] = attentions
         self.downsamplers = [Downsample2D(out_channels)] if add_downsample else []
 
     def __call__(
@@ -437,7 +436,7 @@ class CrossAttnDownBlock2D(nn.Module):
         x: mx.array,
         temb: mx.array,
         encoder_hidden_states: mx.array,
-    ) -> Tuple[mx.array, List[mx.array]]:
+    ) -> tuple[mx.array, list[mx.array]]:
         skips = []
         for resnet, attn in zip(self.resnets, self.attentions, strict=False):
             x = resnet(x, temb)
@@ -464,11 +463,11 @@ class UNetMidBlock2DCrossAttn(nn.Module):
 
     def __init__(self, channels: int = 1280, num_heads: int = 20, num_attn_layers: int = 10):
         super().__init__()
-        self.resnets: List[ResnetBlock2D] = [
+        self.resnets: list[ResnetBlock2D] = [
             ResnetBlock2D(channels, channels),
             ResnetBlock2D(channels, channels),
         ]
-        self.attentions: List[Transformer2DModel] = [
+        self.attentions: list[Transformer2DModel] = [
             Transformer2DModel(channels, num_heads, num_attn_layers)
         ]
 
@@ -505,7 +504,7 @@ class CrossAttnUpBlock2D(nn.Module):
         self,
         out_channels: int,
         prev_output_channels: int,
-        res_skip_channels: List[int],   # 3 entries for SDXL (layers_per_block+1)
+        res_skip_channels: list[int],   # 3 entries for SDXL (layers_per_block+1)
         num_attn_layers: int = 10,
         num_heads: int = 20,
         add_upsample: bool = True,
@@ -518,8 +517,8 @@ class CrossAttnUpBlock2D(nn.Module):
             resnets.append(ResnetBlock2D(prev_ch + skip_ch, out_channels))
             attentions.append(Transformer2DModel(out_channels, num_heads, num_attn_layers))
             prev_ch = out_channels
-        self.resnets: List[ResnetBlock2D] = resnets
-        self.attentions: List[Transformer2DModel] = attentions
+        self.resnets: list[ResnetBlock2D] = resnets
+        self.attentions: list[Transformer2DModel] = attentions
         self.upsamplers = [Upsample2D(out_channels)] if add_upsample else []
 
     def __call__(
@@ -527,7 +526,7 @@ class CrossAttnUpBlock2D(nn.Module):
         x: mx.array,
         temb: mx.array,
         encoder_hidden_states: mx.array,
-        res_hidden_states_tuple: Tuple[mx.array, ...],
+        res_hidden_states_tuple: tuple[mx.array, ...],
     ) -> mx.array:
         for resnet, attn, skip in zip(
             self.resnets, self.attentions, res_hidden_states_tuple, strict=False
@@ -547,7 +546,7 @@ class UpBlock2D(nn.Module):
         self,
         out_channels: int,
         prev_output_channels: int,
-        res_skip_channels: List[int],
+        res_skip_channels: list[int],
         add_upsample: bool = False,
     ):
         super().__init__()
@@ -556,14 +555,14 @@ class UpBlock2D(nn.Module):
         for skip_ch in res_skip_channels:
             resnets.append(ResnetBlock2D(prev_ch + skip_ch, out_channels))
             prev_ch = out_channels
-        self.resnets: List[ResnetBlock2D] = resnets
+        self.resnets: list[ResnetBlock2D] = resnets
         self.upsamplers = [Upsample2D(out_channels)] if add_upsample else []
 
     def __call__(
         self,
         x: mx.array,
         temb: mx.array,
-        res_hidden_states_tuple: Tuple[mx.array, ...],
+        res_hidden_states_tuple: tuple[mx.array, ...],
     ) -> mx.array:
         for resnet, skip in zip(self.resnets, res_hidden_states_tuple, strict=False):
             x = mx.concatenate([x, skip], axis=-1)
@@ -771,7 +770,7 @@ class SDXLUNet(nn.Module):
 
         # ── 5. Down path ──────────────────────────────────────────────────────
         # Collect ALL skip connections (including initial conv_in output)
-        down_block_res_samples: List[mx.array] = [sample]
+        down_block_res_samples: list[mx.array] = [sample]
 
         for i, block in enumerate(self.down_blocks):
             if i == 0:  # DownBlock2D

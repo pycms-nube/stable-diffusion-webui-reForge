@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -57,7 +57,7 @@ class LRUBlockCache:
 
     def __init__(
         self,
-        blocks: List[Tuple[str, nn.Module]],
+        blocks: list[tuple[str, nn.Module]],
         device: torch.device,
         capacity: int,
     ) -> None:
@@ -70,7 +70,7 @@ class LRUBlockCache:
         # Placing the copy on a separate stream lets the default stream continue
         # with CPU-side work while the DMA engine transfers the block.
         # module.to(device) is still CPU-synchronous so no CUDA event is needed.
-        self._xfer_stream: Optional[Any] = None
+        self._xfer_stream: Any | None = None
         if device.type == "cuda":
             try:
                 self._xfer_stream = torch.cuda.Stream(device)
@@ -78,7 +78,7 @@ class LRUBlockCache:
             except Exception as exc:
                 log.warning("LRUBlockCache: could not create transfer stream: %s", exc)
 
-        self._modules: Dict[str, nn.Module] = {}
+        self._modules: dict[str, nn.Module] = {}
         for path, module in blocks:
             self._modules[path] = module
             # Ensure block starts on CPU — if it's already on CPU this is a no-op.
@@ -128,14 +128,14 @@ class LRUBlockCache:
         self._lru.clear()
         log.info("LRUBlockCache: flushed all blocks to CPU (VRAM pressure).")
 
-    def install_hooks(self) -> List[Any]:
+    def install_hooks(self) -> list[Any]:
         """Register a forward pre-hook on every managed block.
 
         Each hook calls :meth:`activate` so the block's parameters are on
         device before its forward pass begins.  Returns the hook handles
         (call ``handle.remove()`` to uninstall).
         """
-        handles: List[Any] = []
+        handles: list[Any] = []
         for path in self._modules:
             def _make_hook(p: str):
                 def _pre_hook(m: nn.Module, inp: Any) -> None:
@@ -187,10 +187,10 @@ class LRUBlockCache:
 # ---------------------------------------------------------------------------
 
 def estimate_capacity(
-    blocks: List[Tuple[str, nn.Module]],
+    blocks: list[tuple[str, nn.Module]],
     device: torch.device,
-    headroom_bytes: Optional[int] = None,
-    x_shape: Optional[Tuple[int, ...]] = None,
+    headroom_bytes: int | None = None,
+    x_shape: tuple[int, ...] | None = None,
 ) -> int:
     """Return how many blocks from *blocks* fit in available device memory.
 
@@ -277,7 +277,7 @@ def estimate_capacity(
     # was validated empirically against SDXL down_blocks/mid_block/up_blocks on
     # a 7.6 GiB GPU: without it capacity is over-estimated and OOM occurs.
     _CUDA_OVERHEAD = 1.15
-    block_sizes: List[Tuple[int, str]] = []
+    block_sizes: list[tuple[int, str]] = []
     for path, module in blocks:
         size = sum(p.numel() * p.element_size() for p in module.parameters())
         size += sum(

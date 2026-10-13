@@ -2,7 +2,6 @@ import os
 import json
 import gradio as gr
 import functools
-from typing import List, Optional, Tuple
 from dataclasses import dataclass
 import numpy as np
 
@@ -31,29 +30,29 @@ from lib_controlnet.enums import (
 class A1111Context:
     """Contains all components from A1111."""
 
-    img2img_batch_input_dir: Optional[gr.components.IOComponent] = None
-    img2img_batch_output_dir: Optional[gr.components.IOComponent] = None
-    txt2img_submit_button: Optional[gr.components.IOComponent] = None
-    img2img_submit_button: Optional[gr.components.IOComponent] = None
+    img2img_batch_input_dir: gr.components.IOComponent | None = None
+    img2img_batch_output_dir: gr.components.IOComponent | None = None
+    txt2img_submit_button: gr.components.IOComponent | None = None
+    img2img_submit_button: gr.components.IOComponent | None = None
 
     # Slider controls from A1111 WebUI.
-    txt2img_w_slider: Optional[gr.components.IOComponent] = None
-    txt2img_h_slider: Optional[gr.components.IOComponent] = None
-    img2img_w_slider: Optional[gr.components.IOComponent] = None
-    img2img_h_slider: Optional[gr.components.IOComponent] = None
+    txt2img_w_slider: gr.components.IOComponent | None = None
+    txt2img_h_slider: gr.components.IOComponent | None = None
+    img2img_w_slider: gr.components.IOComponent | None = None
+    img2img_h_slider: gr.components.IOComponent | None = None
 
-    img2img_img2img_tab: Optional[gr.components.IOComponent] = None
-    img2img_img2img_sketch_tab: Optional[gr.components.IOComponent] = None
-    img2img_batch_tab: Optional[gr.components.IOComponent] = None
-    img2img_inpaint_tab: Optional[gr.components.IOComponent] = None
-    img2img_inpaint_sketch_tab: Optional[gr.components.IOComponent] = None
-    img2img_inpaint_upload_tab: Optional[gr.components.IOComponent] = None
+    img2img_img2img_tab: gr.components.IOComponent | None = None
+    img2img_img2img_sketch_tab: gr.components.IOComponent | None = None
+    img2img_batch_tab: gr.components.IOComponent | None = None
+    img2img_inpaint_tab: gr.components.IOComponent | None = None
+    img2img_inpaint_sketch_tab: gr.components.IOComponent | None = None
+    img2img_inpaint_upload_tab: gr.components.IOComponent | None = None
 
-    img2img_inpaint_area: Optional[gr.components.IOComponent] = None
-    txt2img_enable_hr: Optional[gr.components.IOComponent] = None
+    img2img_inpaint_area: gr.components.IOComponent | None = None
+    txt2img_enable_hr: gr.components.IOComponent | None = None
 
     @property
-    def img2img_inpaint_tabs(self) -> Tuple[gr.components.IOComponent]:
+    def img2img_inpaint_tabs(self) -> tuple[gr.components.IOComponent]:
         return (
             self.img2img_inpaint_tab,
             self.img2img_inpaint_sketch_tab,
@@ -61,7 +60,7 @@ class A1111Context:
         )
 
     @property
-    def img2img_non_inpaint_tabs(self) -> Tuple[gr.components.IOComponent]:
+    def img2img_non_inpaint_tabs(self) -> tuple[gr.components.IOComponent]:
         return (
             self.img2img_img2img_tab,
             self.img2img_img2img_sketch_tab,
@@ -115,7 +114,7 @@ class A1111Context:
             )
 
 
-class ControlNetUiGroup(object):
+class ControlNetUiGroup:
     refresh_symbol = "\U0001f504"  # 🔄
     switch_values_symbol = "\U000021C5"  # ⇅
     camera_symbol = "\U0001F4F7"  # 📷
@@ -141,7 +140,7 @@ class ControlNetUiGroup(object):
     )
     a1111_context = A1111Context()
     # All ControlNetUiGroup instances created.
-    all_ui_groups: List["ControlNetUiGroup"] = []
+    all_ui_groups: list["ControlNetUiGroup"] = []
 
     @property
     def width_slider(self):
@@ -161,7 +160,7 @@ class ControlNetUiGroup(object):
         self,
         is_img2img: bool,
         default_unit: external_code.ControlNetUnit,
-        photopea: Optional[Photopea] = None,
+        photopea: Photopea | None = None,
     ):
         # Whether callbacks have been registered.
         self.callbacks_registered: bool = False
@@ -598,7 +597,7 @@ class ControlNetUiGroup(object):
                 return external_code.ipa_block_weight_presets.get(alias, "")
             else:
                 if os.path.exists(IPA_CW_PATH):
-                    with open(IPA_CW_PATH, "r") as file:
+                    with open(IPA_CW_PATH) as file:
                         return file.readline().strip()
                 else:
                     return ""
@@ -1231,7 +1230,7 @@ class ControlNetUiGroup(object):
             self.register_shift_hr_options()
 
     @staticmethod
-    def register_input_mode_sync(ui_groups: List["ControlNetUiGroup"]):
+    def register_input_mode_sync(ui_groups: list["ControlNetUiGroup"]):
         """
         - ui_group.input_mode should be updated when user switch tabs.
         - Loopback checkbox should only be visible if at least one ControlNet unit

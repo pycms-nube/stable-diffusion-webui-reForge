@@ -4,10 +4,9 @@
 # 3rd edit by Forge Official
 
 
-from __future__ import division
 import torch
 from torch import Tensor
-from typing import List, Union, Tuple, Callable, Dict
+from collections.abc import Callable
 from weakref import WeakSet
 import ldm_patched.modules.utils
 import ldm_patched.modules.model_patcher
@@ -72,13 +71,13 @@ def repeat_to_batch_size(tensor, batch_size, dim=0):
         return tensor.repeat(dim * [1] + [ceildiv(batch_size, tensor.shape[dim])] + [1] * (len(tensor.shape) - 1 - dim)).narrow(dim, 0, batch_size)
     return tensor
 
-def split_bboxes(w:int, h:int, tile_w:int, tile_h:int, overlap:int=16, init_weight:Union[Tensor, float]=1.0) -> Tuple[List[BBox], Tensor]:
+def split_bboxes(w:int, h:int, tile_w:int, tile_h:int, overlap:int=16, init_weight:Tensor | float=1.0) -> tuple[list[BBox], Tensor]:
     cols = ceildiv((w - overlap) , (tile_w - overlap))
     rows = ceildiv((h - overlap) , (tile_h - overlap))
     dx = (w - tile_w) / (cols - 1) if cols > 1 else 0
     dy = (h - tile_h) / (rows - 1) if rows > 1 else 0
 
-    bbox_list: List[BBox] = []
+    bbox_list: list[BBox] = []
     weight = torch.zeros((1, 1, h, w), device=devices.device, dtype=torch.float32)
     for row in range(rows):
         y = min(int(row * dy), h - tile_h)
@@ -131,11 +130,11 @@ class AbstractDiffusion:
         self.tile_bs: int = None
         self.num_tiles: int = None
         self.num_batches: int = None
-        self.batched_bboxes: List[List[BBox]] = []
+        self.batched_bboxes: list[list[BBox]] = []
 
         # ext. Region Prompt Control (custom bbox)
         self.enable_custom_bbox: bool = False
-        self.custom_bboxes: List[CustomBBox] = []
+        self.custom_bboxes: list[CustomBBox] = []
         # self.cond_basis: Cond = None
         # self.uncond_basis: Uncond = None
         # self.draw_background: bool = True       # by default we draw major prompts in grid tiles
@@ -145,11 +144,11 @@ class AbstractDiffusion:
         self.enable_controlnet: bool = False
         # self.controlnet_script: ModuleType = None
         self.control_tensor_batch_dict = {}
-        self.control_tensor_batch: List[List[Tensor]] = [[]]
+        self.control_tensor_batch: list[list[Tensor]] = [[]]
         # self.control_params: Dict[str, Tensor] = None # {}
-        self.control_params: Dict[Tuple, List[List[Tensor]]] = {}
+        self.control_params: dict[tuple, list[list[Tensor]]] = {}
         self.control_tensor_cpu: bool = None
-        self.control_tensor_custom: List[List[Tensor]] = []
+        self.control_tensor_custom: list[list[Tensor]] = []
 
         self.draw_background: bool = True       # by default we draw major prompts in grid tiles
         self.control_tensor_cpu = False
@@ -233,7 +232,7 @@ class AbstractDiffusion:
     # detached version of above
     @grid_bbox
     def get_grid_bbox(self, tile_w: int, tile_h: int, overlap: int, tile_bs: int, w: int, h: int,
-                    device: torch.device, get_tile_weights: Callable = lambda: 1.0) -> List[List[BBox]]:
+                    device: torch.device, get_tile_weights: Callable = lambda: 1.0) -> list[list[BBox]]:
         weights = torch.zeros((1, 1, h, w), device=device, dtype=torch.float32)
         # enable_grid_bbox = True
 
@@ -251,7 +250,7 @@ class AbstractDiffusion:
         return batched_bboxes
 
     @grid_bbox
-    def get_tile_weights(self) -> Union[Tensor, float]:
+    def get_tile_weights(self) -> Tensor | float:
         return 1.0
 
     @noise_inverse
@@ -343,7 +342,7 @@ class AbstractDiffusion:
             #     control_tile = control_tile.repeat([x_batch_size if is_denoise else x_batch_size * 2, 1, 1, 1])
             # self.control_params[param_id].hint_cond = control_tile.to(devices.device)
 
-    def process_controlnet(self, x_noisy, c_in: dict, cond_or_uncond: List, bboxes, batch_size: int, batch_id: int, shifts=None, shift_condition=None):
+    def process_controlnet(self, x_noisy, c_in: dict, cond_or_uncond: list, bboxes, batch_size: int, batch_id: int, shifts=None, shift_condition=None):
         control: ControlNet = c_in['control']
         param_id = -1 # current controlnet & previous controlnets
         tuple_key = tuple(cond_or_uncond) + tuple(x_noisy.shape)
@@ -483,7 +482,7 @@ class MultiDiffusion(AbstractDiffusion):
         x_in: Tensor = args["input"]
         t_in: Tensor = args["timestep"]
         c_in: dict = args["c"]
-        cond_or_uncond: List = args["cond_or_uncond"]
+        cond_or_uncond: list = args["cond_or_uncond"]
 
         N, C, H, W = x_in.shape
 
@@ -557,7 +556,7 @@ class MultiDiffusion(AbstractDiffusion):
 class Store:
     def __repr__(self):
         keys = sorted(self.__dict__)
-        items = ("{}={!r}".format(k, self.__dict__[k]) for k in keys)
+        items = (f"{k}={self.__dict__[k]!r}" for k in keys)
         return "{}({})".format(type(self).__name__, ", ".join(items))
 
     def __eq__(self, other):
@@ -599,7 +598,7 @@ class SpotDiffusion(AbstractDiffusion):
         x_in: Tensor = args["input"]
         t_in: Tensor = args["timestep"]
         c_in: dict = args["c"]
-        cond_or_uncond: List = args["cond_or_uncond"]
+        cond_or_uncond: list = args["cond_or_uncond"]
 
         N, C, H, W = x_in.shape
 
@@ -735,7 +734,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
         super().__init__(*args, **kwargs)
 
         # weights for custom bboxes
-        self.custom_weights: List[Tensor] = []
+        self.custom_weights: list[Tensor] = []
         self.get_weight = gaussian_weights
 
     def init_done(self):
@@ -760,7 +759,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
         x_in: Tensor = args["input"]
         t_in: Tensor = args["timestep"]
         c_in: dict = args["c"]
-        cond_or_uncond: List= args["cond_or_uncond"]
+        cond_or_uncond: list= args["cond_or_uncond"]
 
         N, C, H, W = x_in.shape
 
@@ -842,7 +841,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
         return x_out
 
 MAX_RESOLUTION=8192
-class TiledDiffusion():
+class TiledDiffusion:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {"model": ("MODEL", ),

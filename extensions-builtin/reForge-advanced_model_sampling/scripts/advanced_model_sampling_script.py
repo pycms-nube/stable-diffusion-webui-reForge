@@ -199,7 +199,7 @@ class AdvancedModelSamplingScript(scripts.Script):
             return {}
 
         try:
-            with open(ui_config_path, "r", encoding="utf8") as file:
+            with open(ui_config_path, encoding="utf8") as file:
                 loaded = json.load(file)
                 return loaded if isinstance(loaded, dict) else {}
         except Exception as e:

@@ -32,7 +32,7 @@ without ever blocking the dispatch loop itself. That's what
 from __future__ import annotations
 
 import threading
-from typing import Any, Optional
+from typing import Any
 
 
 class AsyncReadiness:
@@ -55,7 +55,7 @@ class AsyncReadiness:
         self._value = value
         self._event = threading.Event()
         self._result: Any = None
-        self._error: Optional[BaseException] = None
+        self._error: BaseException | None = None
         self._thread = threading.Thread(target=self._wait, daemon=True)
         self._thread.start()
 
@@ -72,7 +72,7 @@ class AsyncReadiness:
         """Non-blocking poll — True once the value is fully materialized."""
         return self._event.is_set()
 
-    def get(self, timeout: Optional[float] = None) -> Any:
+    def get(self, timeout: float | None = None) -> Any:
         """Block (if not already ready) until the value is materialized,
         then return it."""
         self._event.wait(timeout=timeout)

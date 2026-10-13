@@ -36,7 +36,7 @@ Follows the same priority logic as DiffPipeline (observation #3 in memory):
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -90,7 +90,7 @@ class MLXSDXLPipeline:
     sampling step by the forge wrapper registered in ``mlx_pipeline.__init__``.
     """
 
-    def __init__(self, unet_patcher: "UnetPatcher", sd_model: Any):
+    def __init__(self, unet_patcher: UnetPatcher, sd_model: Any):
         self.unet_patcher = unet_patcher
         self.sd_model = sd_model
 
@@ -122,10 +122,10 @@ class MLXSDXLPipeline:
         self,
         x: torch.Tensor,
         t: torch.Tensor,
-        c_concat: Optional[torch.Tensor] = None,
-        c_crossattn: Optional[torch.Tensor] = None,
-        control: Optional[Dict] = None,
-        transformer_options: Optional[Dict] = None,
+        c_concat: torch.Tensor | None = None,
+        c_crossattn: torch.Tensor | None = None,
+        control: dict | None = None,
+        transformer_options: dict | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Drop-in replacement for ``BaseModel.apply_model()``.

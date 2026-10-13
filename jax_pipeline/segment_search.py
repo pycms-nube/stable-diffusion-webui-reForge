@@ -84,7 +84,7 @@ Footprint accounting
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple
 
 log = logging.getLogger(__name__)
 
@@ -147,16 +147,16 @@ class SegmentPlan(NamedTuple):
     at the first step and zero further transfers for the rest of the
     generation, without changing the segmentation itself at all.
     """
-    ranges: Tuple[Tuple[int, int], ...]           # [(start, end), ...] over atoms, half-open
-    spill_schedule: Dict[int, Tuple[str, ...]]     # segment_index -> value_ids to spill after it
+    ranges: tuple[tuple[int, int], ...]           # [(start, end), ...] over atoms, half-open
+    spill_schedule: dict[int, tuple[str, ...]]     # segment_index -> value_ids to spill after it
     cache_budget_bytes: int                        # how much weight data BlockParamCache may hold resident at once
 
 
 def greedy_best_fit_search(
-    atoms: List[Any],
-    weight_bytes: Dict[str, int],
-    activation_bytes: Dict[str, int],
-    value_bytes: Dict[str, int],
+    atoms: list[Any],
+    weight_bytes: dict[str, int],
+    activation_bytes: dict[str, int],
+    value_bytes: dict[str, int],
     vram_budget_bytes: int,
     max_pending_fraction: float = _MAX_PENDING_FRACTION,
     min_spill_distance: int = _MIN_SPILL_DISTANCE,
@@ -168,18 +168,18 @@ def greedy_best_fit_search(
     if not atoms:
         return SegmentPlan(ranges=(), spill_schedule={}, cache_budget_bytes=0)
 
-    consumer_idx: Dict[str, int] = {}
+    consumer_idx: dict[str, int] = {}
     for i, atom in enumerate(atoms):
         for vid in atom.consumes:
             consumer_idx[vid] = i
 
-    ranges: List[Tuple[int, int]] = []
-    spill_schedule: Dict[int, Tuple[str, ...]] = {}
+    ranges: list[tuple[int, int]] = []
+    spill_schedule: dict[int, tuple[str, ...]] = {}
 
     seg_start = 0
     seg_weight = 0
     seg_peak_activation = 0
-    pending: Dict[str, str] = {}  # value_id -> "device" | "host"
+    pending: dict[str, str] = {}  # value_id -> "device" | "host"
 
     def pending_device_bytes() -> int:
         return sum(value_bytes.get(vid, 0) for vid, loc in pending.items() if loc == "device")
@@ -195,7 +195,7 @@ def greedy_best_fit_search(
             # farthest-consumer-first: spilling something about to be
             # used right away would just add a pointless round trip.
             candidates.sort(key=lambda vid: -(consumer_idx.get(vid, before_idx) - before_idx))
-            spilled: List[str] = []
+            spilled: list[str] = []
             for vid in candidates:
                 if consumer_idx.get(vid, before_idx) - before_idx < min_spill_distance:
                     continue
@@ -246,7 +246,7 @@ def greedy_best_fit_search(
     return SegmentPlan(ranges=tuple(ranges), spill_schedule=spill_schedule, cache_budget_bytes=cache_budget_bytes)
 
 
-def atom_groups_from_plan(atoms: List[Any], plan: SegmentPlan) -> List[List[Any]]:
+def atom_groups_from_plan(atoms: list[Any], plan: SegmentPlan) -> list[list[Any]]:
     return [atoms[start:end] for start, end in plan.ranges]
 
 
@@ -255,9 +255,9 @@ def atom_groups_from_plan(atoms: List[Any], plan: SegmentPlan) -> List[List[Any]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def trace_atom_activation_bytes(
-    atoms: List[Any], flat_params: Dict[str, Any], jax_device, latent_h: int, latent_w: int,
+    atoms: list[Any], flat_params: dict[str, Any], jax_device, latent_h: int, latent_w: int,
     batch: int, seq_len: int, torch_device_for_vram_query,
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Empirically measure each atom's OWN peak activation footprint —
     one jit call per atom (``unet_segments.compile_segments`` at fully-
     fine granularity, already verified numerically equivalent to a
@@ -296,7 +296,7 @@ def trace_atom_activation_bytes(
         f"{cache.budget_bytes/1e9 if cache.budget_bytes else 0:.3f}GB)"
     )
 
-    footprints: Dict[str, int] = {}
+    footprints: dict[str, int] = {}
     try:
         s = jnp.transpose(sample, (0, 2, 3, 1))
         temb_sin = _sinusoidal_embedding(timestep.astype(jnp.float32), _TD, flip_sin_to_cos=True).astype(s.dtype)
@@ -365,9 +365,9 @@ def trace_atom_activation_bytes(
 
 
 def estimate_activation_bytes(
-    atoms: List[Any], flat_params: Dict[str, Any], jax_device, torch_device_for_vram_query,
+    atoms: list[Any], flat_params: dict[str, Any], jax_device, torch_device_for_vram_query,
     device_name: str, total_vram_bytes: int, latent_h: int, latent_w: int, batch: int, seq_len: int,
-) -> Tuple[Dict[str, int], bool]:
+) -> tuple[dict[str, int], bool]:
     """DB-backed fast path for per-atom activation footprint: exact-
     signature hit reuses the stored measurements outright; a close-
     match hit reuses them as a WARM START (skips the expensive full
@@ -425,10 +425,10 @@ def estimate_activation_bytes(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def search_unet_segmentation(
-    flat_params: Dict[str, Any], jax_device, torch_device_for_vram_query,
+    flat_params: dict[str, Any], jax_device, torch_device_for_vram_query,
     latent_h: int, latent_w: int, batch: int, seq_len: int, dtype_bytes: int = 2,
-    vram_budget_override: Optional[int] = None,
-) -> Tuple[List[Any], SegmentPlan]:
+    vram_budget_override: int | None = None,
+) -> tuple[list[Any], SegmentPlan]:
     """Full pipeline: build atoms for this shape, get weight/value/
     activation footprints (DB warm start or fresh trace), run the
     Best-Fit search against the available VRAM, persist the resulting

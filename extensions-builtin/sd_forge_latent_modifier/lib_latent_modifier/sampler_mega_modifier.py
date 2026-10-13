@@ -75,7 +75,7 @@ def gaussian_kernel(kernel_size, sigma):
 
 class GaussianBlur(nn.Module):
     def __init__(self, channels, kernel_size, sigma):
-        super(GaussianBlur, self).__init__()
+        super().__init__()
         self.channels = channels
         self.kernel_size = kernel_size
         self.sigma = sigma
@@ -280,10 +280,10 @@ class JointBilateralBlur(_BilateralBlur):
 # Below is perlin noise from https://github.com/tasptz/pytorch-perlin-noise/blob/main/perlin_noise/perlin_noise.py
 from torch import Generator, Tensor, lerp
 from torch.nn.functional import unfold
-from typing import Callable, Tuple
+from collections.abc import Callable
 from math import pi
 
-def get_positions(block_shape: Tuple[int, int]) -> Tensor:
+def get_positions(block_shape: tuple[int, int]) -> Tensor:
     """
     Generate position tensor.
 
@@ -406,8 +406,8 @@ def perlin_noise_tensor(
 
 
 def perlin_noise(
-    grid_shape: Tuple[int, int],
-    out_shape: Tuple[int, int],
+    grid_shape: tuple[int, int],
+    out_shape: tuple[int, int],
     batch_size: int = 1,
     generator: Generator = None,
     *args,

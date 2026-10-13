@@ -66,7 +66,7 @@ enough to OOM on small cards even though the circuit breaker
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -80,7 +80,7 @@ _warned_unpadded_mismatch = False
 
 # -- conditioning extraction (framework-agnostic torch-side logic) --------------
 
-def _get_raw_cond_dict(cond_obj: Any) -> Optional[Dict]:
+def _get_raw_cond_dict(cond_obj: Any) -> dict | None:
     """Extract the raw conditioning dict from whatever format
     KDiffusionSampler stores in ``sampler_extra_args``.
 
@@ -115,9 +115,9 @@ def _get_raw_cond_dict(cond_obj: Any) -> Optional[Dict]:
 def _extract_cond_jax(
     cond_obj: Any,
     B: int,
-    latent_hw: Tuple[int, int],
+    latent_hw: tuple[int, int],
     dtype,
-) -> Tuple["jnp.ndarray", "jnp.ndarray", "jnp.ndarray"]:
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Extract encoder_hidden_states [B, S, 2048], text_embeds [B, 1280],
     and time_ids [B, 6] as JAX arrays from the raw conditioning object
     stored in ``sampler_extra_args``.
@@ -174,13 +174,13 @@ def _extract_cond_jax(
 # -- cond/uncond sequence-length reconciliation ---------------------------------
 # See the module docstring's "cond/uncond sequence-length mismatch" section.
 
-def _empty_prompt_to_jax(empty_torch: "torch.Tensor", dtype) -> "jnp.ndarray":
+def _empty_prompt_to_jax(empty_torch: torch.Tensor, dtype) -> jnp.ndarray:
     import jax.numpy as jnp
     arr = empty_torch.detach().cpu().float().numpy()
     return jnp.asarray(arr, dtype=dtype)
 
 
-def _get_empty_prompt_embedding(sd_model) -> Optional["torch.Tensor"]:
+def _get_empty_prompt_embedding(sd_model) -> torch.Tensor | None:
     """Get (and cache, on ``sd_model``) the empty-prompt ('') CLIP
     crossattn embedding.
 
@@ -212,7 +212,7 @@ def _get_empty_prompt_embedding(sd_model) -> Optional["torch.Tensor"]:
         return None
 
 
-def _pad_seq_v0(enc_c: "jnp.ndarray", enc_u: "jnp.ndarray") -> Tuple["jnp.ndarray", "jnp.ndarray"]:
+def _pad_seq_v0(enc_c: jnp.ndarray, enc_u: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Mirrors ``CFGDenoiser.pad_cond_uncond_v0`` exactly: repeat uncond's
     last token vector to extend it, or truncate it, so its sequence length
     matches cond's. Only ever adjusts uncond — matches the reference
@@ -230,8 +230,8 @@ def _pad_seq_v0(enc_c: "jnp.ndarray", enc_u: "jnp.ndarray") -> Tuple["jnp.ndarra
 
 
 def _pad_seq_with_empty(
-    enc_c: "jnp.ndarray", enc_u: "jnp.ndarray", empty_jax: "jnp.ndarray",
-) -> Tuple["jnp.ndarray", "jnp.ndarray"]:
+    enc_c: jnp.ndarray, enc_u: jnp.ndarray, empty_jax: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Mirrors ``CFGDenoiser.pad_cond_uncond`` / the module-level
     ``pad_cond`` exactly: extend the shorter of cond/uncond with whole
     tiled copies of the empty-prompt embedding until their lengths match.
@@ -259,8 +259,8 @@ def _pad_seq_with_empty(
 
 
 def _reconcile_cond_uncond_seq_len(
-    enc_c: "jnp.ndarray", enc_u: "jnp.ndarray", dtype,
-) -> Tuple["jnp.ndarray", "jnp.ndarray"]:
+    enc_c: jnp.ndarray, enc_u: jnp.ndarray, dtype,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Make ``enc_c``/``enc_u``'s sequence lengths match, so they CAN be
     batched into a single UNet forward call, by mirroring webui's own
     ``shared.opts.pad_cond_uncond`` / ``pad_cond_uncond_v0`` settings
@@ -379,8 +379,8 @@ class JAXCFGDenoiser:
         forward_fn,
         params: Any,  # flat pytree OR a jax_pipeline.block_cache.BlockParamCache — see docstring
         model_sampling: Any,
-        extra_args: Dict,
-        latent_shape: Tuple[int, ...],
+        extra_args: dict,
+        latent_shape: tuple[int, ...],
         phase_manager: Any = None,
         compute_dtype: Any = None,
         forward_cfg_fn: Any = None,
@@ -450,14 +450,14 @@ class JAXCFGDenoiser:
 
     # -- sigma ops (all in JAX) ------------------------------------------------
 
-    def _timestep(self, sigma: "jnp.ndarray") -> "jnp.ndarray":
+    def _timestep(self, sigma: jnp.ndarray) -> jnp.ndarray:
         """sigma [B] float32 -> nearest discrete timestep [B] float32."""
         import jax.numpy as jnp
         log_s = jnp.log(sigma)                                      # [B]
         diff = jnp.abs(log_s[:, None] - self._log_sigmas[None, :])  # [B, N]
         return jnp.argmin(diff, axis=1).astype(jnp.float32)          # [B]
 
-    def _calc_input(self, sigma: "jnp.ndarray", x: "jnp.ndarray") -> "jnp.ndarray":
+    def _calc_input(self, sigma: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
         """EPS preconditioning: xc = x / sqrt(sigma^2+1).
 
         Casts back to ``self._dtype`` (the UNet's own compute dtype),
@@ -469,7 +469,7 @@ class JAXCFGDenoiser:
         return (x.astype(jnp.float32) / jnp.sqrt(s * s + 1.0)).astype(self._dtype)
 
     @staticmethod
-    def _calc_denoised(sigma: "jnp.ndarray", model_out: "jnp.ndarray", x: "jnp.ndarray") -> "jnp.ndarray":
+    def _calc_denoised(sigma: jnp.ndarray, model_out: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
         """EPS postconditioning: denoised = x - model_out * sigma.
 
         Returns float32 to match the reference (model_base.py:
@@ -484,10 +484,10 @@ class JAXCFGDenoiser:
 
     def __call__(
         self,
-        x: "jnp.ndarray",
-        sigma: "jnp.ndarray",
+        x: jnp.ndarray,
+        sigma: jnp.ndarray,
         **_kwargs: Any,  # absorb extra_args kwargs forwarded by sampler
-    ) -> "jnp.ndarray":
+    ) -> jnp.ndarray:
         """
         x     : [B, 4, H, W]  bfloat16 (or float32 — cast happens in _calc_input)
         sigma : [B]           float32

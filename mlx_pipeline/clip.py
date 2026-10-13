@@ -32,7 +32,7 @@ detected (any token id ≥ 49408).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -48,13 +48,13 @@ _EOS_TOKEN_ID    = 49407  # <|endoftext|>
 
 # ── activation functions ────────────────────────────────────────────────────────
 
-def _quick_gelu(x: "mx.array") -> "mx.array":
+def _quick_gelu(x: mx.array) -> mx.array:
     """CLIP-L uses quick GELU: x * sigmoid(1.702 * x)."""
     import mlx.core as mx
     return x * mx.sigmoid(1.702 * x.astype(mx.float32)).astype(x.dtype)
 
 
-def _gelu(x: "mx.array") -> "mx.array":
+def _gelu(x: mx.array) -> mx.array:
     """CLIP-G uses standard GELU."""
     import mlx.nn as nn
     return nn.gelu(x)
@@ -73,10 +73,10 @@ class _CLIPSelfAttn:
         self,
         d_model: int,
         n_heads: int,
-        q_weight: "mx.array", q_bias: "mx.array",
-        k_weight: "mx.array", k_bias: "mx.array",
-        v_weight: "mx.array", v_bias: "mx.array",
-        out_weight: "mx.array", out_bias: "mx.array",
+        q_weight: mx.array, q_bias: mx.array,
+        k_weight: mx.array, k_bias: mx.array,
+        v_weight: mx.array, v_bias: mx.array,
+        out_weight: mx.array, out_bias: mx.array,
     ):
         import mlx.core as mx
         self.n_heads   = n_heads
@@ -92,7 +92,7 @@ class _CLIPSelfAttn:
         self.o_w = out_weight.astype(mx.bfloat16)
         self.o_b = out_bias.astype(mx.bfloat16)
 
-    def __call__(self, x: "mx.array", mask: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array, mask: mx.array) -> mx.array:
         """x: [B, T, d]; mask: [T, T] additive causal mask → [B, T, d]"""
         import mlx.core as mx
         B, T, d = x.shape
@@ -120,8 +120,8 @@ class _CLIPMLP:
 
     def __init__(
         self,
-        fc1_w: "mx.array", fc1_b: "mx.array",
-        fc2_w: "mx.array", fc2_b: "mx.array",
+        fc1_w: mx.array, fc1_b: mx.array,
+        fc2_w: mx.array, fc2_b: mx.array,
         activation,
     ):
         import mlx.core as mx
@@ -131,7 +131,7 @@ class _CLIPMLP:
         self.fc2_b = fc2_b.astype(mx.bfloat16)
         self.act   = activation
 
-    def __call__(self, x: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array) -> mx.array:
         h = x @ self.fc1_w.T + self.fc1_b
         h = self.act(h)
         return h @ self.fc2_w.T + self.fc2_b
@@ -142,8 +142,8 @@ class _CLIPLayer:
 
     def __init__(
         self,
-        ln1_w: "mx.array", ln1_b: "mx.array",
-        ln2_w: "mx.array", ln2_b: "mx.array",
+        ln1_w: mx.array, ln1_b: mx.array,
+        ln2_w: mx.array, ln2_b: mx.array,
         attn: _CLIPSelfAttn,
         mlp:  _CLIPMLP,
     ):
@@ -155,7 +155,7 @@ class _CLIPLayer:
         self.attn  = attn
         self.mlp   = mlp
 
-    def __call__(self, x: "mx.array", mask: "mx.array") -> "mx.array":
+    def __call__(self, x: mx.array, mask: mx.array) -> mx.array:
         import mlx.core as mx
         # LN1 → Attention → residual
         h = _layer_norm(x, self.ln1_w, self.ln1_b)
@@ -167,7 +167,7 @@ class _CLIPLayer:
         return x + h.astype(x.dtype)
 
 
-def _layer_norm(x: "mx.array", w: "mx.array", b: "mx.array") -> "mx.array":
+def _layer_norm(x: mx.array, w: mx.array, b: mx.array) -> mx.array:
     """Manual layer norm (runs in float32 for stability)."""
     import mlx.core as mx
     x = x.astype(mx.float32)
@@ -186,12 +186,12 @@ class MLXCLIPTextEncoder:
 
     def __init__(
         self,
-        tok_emb:    "mx.array",        # [V, d]
-        pos_emb:    "mx.array",        # [77, d]
+        tok_emb:    mx.array,        # [V, d]
+        pos_emb:    mx.array,        # [77, d]
         layers:     list,              # list of _CLIPLayer
-        ln_f_w:     "mx.array",        # [d]
-        ln_f_b:     "mx.array",        # [d]
-        tp_w:       "mx.array",        # [d, d]  text_projection (no bias)
+        ln_f_w:     mx.array,        # [d]
+        ln_f_b:     mx.array,        # [d]
+        tp_w:       mx.array,        # [d, d]  text_projection (no bias)
         n_layers:   int,
         layer_idx:  int,               # intermediate output (negative = from end)
     ):
@@ -216,7 +216,7 @@ class MLXCLIPTextEncoder:
     def encode(
         self,
         tokens: torch.Tensor,          # [B, 77] long
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Returns
         -------
@@ -231,7 +231,7 @@ class MLXCLIPTextEncoder:
         tok_ids  = mx.array(tokens.cpu().numpy().astype(np.int32))   # [B, T]
         x        = self.tok_emb[tok_ids] + self.pos_emb[None, :T]    # [B, T, d]
 
-        intermediate: Optional["mx.array"] = None
+        intermediate: mx.array | None = None
         for i, layer in enumerate(self.layers):
             x = layer(x, self._causal[:T, :T])
             if i == self._inter_idx:
@@ -263,7 +263,7 @@ class MLXCLIPTextEncoder:
         z_np = np.array(intermediate.astype(mx.float32))
         z    = torch.from_numpy(z_np.copy()).float()
 
-        pooled_t: Optional[torch.Tensor] = None
+        pooled_t: torch.Tensor | None = None
         if pooled is not None:
             pooled_t = torch.from_numpy(np.array(pooled.astype(mx.float32)).copy()).float()
 
@@ -272,14 +272,14 @@ class MLXCLIPTextEncoder:
 
 # ── weight loading ──────────────────────────────────────────────────────────────
 
-def _t2m_f32(t: torch.Tensor) -> "mx.array":
+def _t2m_f32(t: torch.Tensor) -> mx.array:
     """torch tensor → MLX float32 array (bfloat16 cast happens at use site)."""
     import mlx.core as mx
     return mx.array(t.detach().float().cpu().numpy())
 
 
 def _load_layer(sd: dict, prefix: str, d_model: int, n_heads: int,
-                d_ff: int, act) -> "_CLIPLayer":
+                d_ff: int, act) -> _CLIPLayer:
     """Load one CLIP transformer layer from the state dict."""
     p = prefix  # e.g.  "text_model.encoder.layers.0"
     attn = _CLIPSelfAttn(
@@ -314,8 +314,8 @@ def build_clip_encoder(
     layer_idx: int = -2,
     has_text_projection: bool = True,
     activation = None,
-    text_projection_param: Optional[torch.Tensor] = None,
-) -> "MLXCLIPTextEncoder":
+    text_projection_param: torch.Tensor | None = None,
+) -> MLXCLIPTextEncoder:
     """
     Build an MLXCLIPTextEncoder from an ldm_patched CLIPTextModel.
 
@@ -384,7 +384,7 @@ def build_clip_encoder(
 # ── hook helpers ────────────────────────────────────────────────────────────────
 
 def _make_clip_l_hook(
-    mlx_enc: "MLXCLIPTextEncoder",
+    mlx_enc: MLXCLIPTextEncoder,
     orig_fn,
     clip_l_model=None,
 ):
@@ -436,7 +436,7 @@ def _make_clip_l_hook(
 
 
 def _make_clip_g_hook(
-    mlx_enc: "MLXCLIPTextEncoder",
+    mlx_enc: MLXCLIPTextEncoder,
     orig_fn,
     clip_g_model=None,
 ):

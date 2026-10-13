@@ -449,7 +449,7 @@ def draw_xyz_grid(p, xs, ys, zs, x_labels, y_labels, z_labels, cell, draw_legend
     return processed_result
 
 
-class SharedSettingsStackHelper(object):
+class SharedSettingsStackHelper:
     def __enter__(self):
         pass
 

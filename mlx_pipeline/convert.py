@@ -25,7 +25,7 @@ transformation is needed between stages 2 and the load call.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict, List, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -40,9 +40,9 @@ log = logging.getLogger(__name__)
 # ── Stage 1: ldm state dict → HF key dict ────────────────────────────────────
 
 def ldm_sd_to_hf(
-    ldm_state_dict: Dict[str, "torch.Tensor"],
+    ldm_state_dict: dict[str, torch.Tensor],
     ldm_unet_cfg: dict,
-) -> Dict[str, "torch.Tensor"]:
+) -> dict[str, torch.Tensor]:
     """Convert an ldm UNet state dict to HF-named tensors.
 
     Parameters
@@ -64,8 +64,8 @@ def ldm_sd_to_hf(
 
     key_map = unet_to_diffusers(merged)  # {hf_key: ldm_rel_key}
 
-    hf_sd: Dict[str, "torch.Tensor"] = {}
-    missing_ldm: List[str] = []
+    hf_sd: dict[str, torch.Tensor] = {}
+    missing_ldm: list[str] = []
 
     for hf_key, ldm_rel_key in key_map.items():
         if ldm_rel_key in ldm_state_dict:
@@ -88,7 +88,7 @@ def ldm_sd_to_hf(
 
 # ── Stage 2: HF tensors → MLX bfloat16 arrays ────────────────────────────────
 
-def _tensor_to_mlx_bf16(key: str, tensor: "torch.Tensor") -> "mx.array":
+def _tensor_to_mlx_bf16(key: str, tensor: torch.Tensor) -> mx.array:
     """Convert a single PyTorch tensor to an MLX bfloat16 array.
 
     Conv2d weight tensors (identified by key ending in ".weight" on a Conv
@@ -116,13 +116,13 @@ def _tensor_to_mlx_bf16(key: str, tensor: "torch.Tensor") -> "mx.array":
 
 
 def hf_sd_to_mlx(
-    hf_sd: Dict[str, "torch.Tensor"],
-) -> List[Tuple[str, "mx.array"]]:
+    hf_sd: dict[str, torch.Tensor],
+) -> list[tuple[str, mx.array]]:
     """Convert HF-keyed state dict to a list of (key, mx.array_bf16) pairs.
 
     Suitable for passing to ``SDXLUNet.load_weights(pairs, strict=False)``.
     """
-    pairs: List[Tuple[str, "mx.array"]] = []
+    pairs: list[tuple[str, mx.array]] = []
     skipped = 0
 
     for key, tensor in hf_sd.items():
@@ -142,7 +142,7 @@ def hf_sd_to_mlx(
 # ── Convenience: full pipeline (ldm model → MLX SDXLUNet) ────────────────────
 
 def load_weights_from_ldm(
-    mlx_unet: "SDXLUNet",
+    mlx_unet: SDXLUNet,
     ldm_model,
     report: bool = True,
 ) -> None:

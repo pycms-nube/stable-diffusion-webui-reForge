@@ -1,4 +1,3 @@
-from typing import Optional
 from copy import copy
 from modules import processing
 from modules.api import api
@@ -20,7 +19,8 @@ import safetensors.torch
 import cv2
 import logging
 
-from typing import Any, Callable, Dict, List
+from typing import Any
+from collections.abc import Callable
 from modules.safe import unsafe_torch_load
 from lib_controlnet.logging import logger
 
@@ -137,7 +137,7 @@ except ImportError:
     pass
 
 
-def svg_preprocess(inputs: Dict, preprocess: Callable):
+def svg_preprocess(inputs: dict, preprocess: Callable):
     if not inputs:
         return None
 
@@ -172,7 +172,7 @@ def read_image(img_path: str) -> str:
     return encoded_image
 
 
-def read_image_dir(img_dir: str, suffixes=('.png', '.jpg', '.jpeg', '.webp')) -> List[str]:
+def read_image_dir(img_dir: str, suffixes=('.png', '.jpg', '.jpeg', '.webp')) -> list[str]:
     """Try read all images in given img_dir."""
     images = []
     for filename in os.listdir(img_dir):
@@ -180,7 +180,7 @@ def read_image_dir(img_dir: str, suffixes=('.png', '.jpg', '.jpeg', '.webp')) ->
             img_path = os.path.join(img_dir, filename)
             try:
                 images.append(read_image(img_path))
-            except IOError:
+            except OSError:
                 logger.error(f"Error opening {img_path}")
     return images
 
@@ -237,7 +237,7 @@ def prepare_mask(
     return mask
 
 
-def set_numpy_seed(p: processing.StableDiffusionProcessing) -> Optional[int]:
+def set_numpy_seed(p: processing.StableDiffusionProcessing) -> int | None:
     """
     Set the random seed for NumPy based on the provided parameters.
 
@@ -365,7 +365,7 @@ def judge_image_type(img):
     return isinstance(img, np.ndarray) and img.ndim == 3 and int(img.shape[2]) in [3, 4]
 
 
-def try_unfold_unit(unit: ControlNetUnit) -> List[ControlNetUnit]:
+def try_unfold_unit(unit: ControlNetUnit) -> list[ControlNetUnit]:
     """Unfolds an multi-inputs unit into multiple units with one input."""
     if unit.input_mode != InputMode.MERGE:
         return [unit]

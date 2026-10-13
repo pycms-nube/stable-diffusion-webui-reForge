@@ -45,7 +45,7 @@ this call" so ControlNet conditioning is never silently ignored.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -85,7 +85,7 @@ class JAXSDXLPipeline:
     sampling step by the forge wrapper registered in ``jax_pipeline.__init__``.
     """
 
-    def __init__(self, unet_patcher: "UnetPatcher", sd_model: Any, phase_manager=None):
+    def __init__(self, unet_patcher: UnetPatcher, sd_model: Any, phase_manager=None):
         self.unet_patcher = unet_patcher
         self.sd_model = sd_model
         self._phase_manager = phase_manager
@@ -339,12 +339,12 @@ class JAXSDXLPipeline:
         self,
         x: torch.Tensor,
         t: torch.Tensor,
-        c_concat: Optional[torch.Tensor] = None,
-        c_crossattn: Optional[torch.Tensor] = None,
-        control: Optional[Dict] = None,
-        transformer_options: Optional[Dict] = None,
+        c_concat: torch.Tensor | None = None,
+        c_crossattn: torch.Tensor | None = None,
+        control: dict | None = None,
+        transformer_options: dict | None = None,
         **kwargs,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         """Drop-in replacement for ``BaseModel.apply_model()``.
 
         Parameters match the ldm_patched calling convention; the return

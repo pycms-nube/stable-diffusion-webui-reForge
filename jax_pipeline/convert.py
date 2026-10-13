@@ -23,7 +23,7 @@ keys directly by this path; there is no separate module tree to build.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -37,9 +37,9 @@ log = logging.getLogger(__name__)
 # ── Stage 1: ldm state dict → HF key dict ────────────────────────────────────
 
 def ldm_sd_to_hf(
-    ldm_state_dict: Dict[str, "torch.Tensor"],
+    ldm_state_dict: dict[str, torch.Tensor],
     ldm_unet_cfg: dict,
-) -> Dict[str, "torch.Tensor"]:
+) -> dict[str, torch.Tensor]:
     """Convert an ldm UNet state dict to HF-named tensors.
 
     Identical mapping logic to ``mlx_pipeline.convert.ldm_sd_to_hf`` and
@@ -54,8 +54,8 @@ def ldm_sd_to_hf(
 
     key_map = unet_to_diffusers(merged)  # {hf_key: ldm_rel_key}
 
-    hf_sd: Dict[str, "torch.Tensor"] = {}
-    missing_ldm: List[str] = []
+    hf_sd: dict[str, torch.Tensor] = {}
+    missing_ldm: list[str] = []
 
     for hf_key, ldm_rel_key in key_map.items():
         if ldm_rel_key in ldm_state_dict:
@@ -94,7 +94,7 @@ def _is_conv_weight(key: str, ndim: int) -> bool:
     )
 
 
-def _tensor_to_jax(key: str, tensor: "torch.Tensor", dtype, sharding=None) -> "jnp.ndarray":
+def _tensor_to_jax(key: str, tensor: torch.Tensor, dtype, sharding=None) -> jnp.ndarray:
     """Convert a single PyTorch tensor to a JAX array.
 
     Conv2d weight tensors are transposed from PyTorch's OIHW layout to
@@ -119,10 +119,10 @@ def _tensor_to_jax(key: str, tensor: "torch.Tensor", dtype, sharding=None) -> "j
 
 
 def hf_sd_to_jax(
-    hf_sd: Dict[str, "torch.Tensor"],
+    hf_sd: dict[str, torch.Tensor],
     dtype=None,
     sharding=None,
-) -> Dict[str, "jnp.ndarray"]:
+) -> dict[str, jnp.ndarray]:
     """Convert an HF-keyed state dict to a flat {key: jnp.ndarray} dict.
 
     ``dtype`` defaults to ``jnp.bfloat16`` if not given. ``sharding`` is
@@ -133,7 +133,7 @@ def hf_sd_to_jax(
     if dtype is None:
         dtype = jnp.bfloat16
 
-    params: Dict[str, "jnp.ndarray"] = {}
+    params: dict[str, jnp.ndarray] = {}
     skipped = 0
 
     for key, tensor in hf_sd.items():
@@ -157,7 +157,7 @@ def load_weights_from_ldm(
     dtype=None,
     report: bool = True,
     sharding=None,
-) -> Dict[str, "jnp.ndarray"]:
+) -> dict[str, jnp.ndarray]:
     """One-shot: read ldm weights, convert to a flat JAX params dict.
 
     Parameters

@@ -90,7 +90,8 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 import torch
@@ -115,20 +116,20 @@ class _NoiseState:
     to paper over.
     """
 
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(self, seed: int | None = None):
         import jax
 
         if seed is None:
             seed = int(torch.randint(0, 2 ** 31 - 1, (1,)).item())
         self.key = jax.random.PRNGKey(seed)
 
-    def normal(self, shape: Tuple[int, ...], dtype) -> Any:
+    def normal(self, shape: tuple[int, ...], dtype) -> Any:
         import jax
         self.key, subkey = jax.random.split(self.key)
         return jax.random.normal(subkey, shape, dtype=dtype)
 
 
-def _to_torch(a: "Any") -> torch.Tensor:
+def _to_torch(a: Any) -> torch.Tensor:
     """JAX array -> CPU torch float32.
 
     ``np.asarray()`` blocks until the array is ready (no explicit
@@ -138,7 +139,7 @@ def _to_torch(a: "Any") -> torch.Tensor:
     return torch.from_numpy(np.asarray(a.astype(jnp.float32)).copy()).float()
 
 
-def _randn_like(noise_state: _NoiseState, x: "Any") -> "Any":
+def _randn_like(noise_state: _NoiseState, x: Any) -> Any:
     """Standard-Gaussian noise matching shape and dtype of x."""
     return noise_state.normal(x.shape, x.dtype)
 
@@ -159,12 +160,12 @@ class _ProgressState:
     """
 
     def __init__(self) -> None:
-        self._last_x_torch: Optional[torch.Tensor] = None
-        self._last_denoised_torch: Optional[torch.Tensor] = None
+        self._last_x_torch: torch.Tensor | None = None
+        self._last_denoised_torch: torch.Tensor | None = None
         self._pending = None  # Optional["AsyncReadiness"]
 
     def report(
-        self, cb, i: int, sigma_t: torch.Tensor, x: "Any", denoised: "Any",
+        self, cb, i: int, sigma_t: torch.Tensor, x: Any, denoised: Any,
         force_sync: bool = False,
     ) -> None:
         if cb is None:
@@ -212,7 +213,7 @@ class _ProgressState:
         })
 
 
-def _ancestral_step(sigma: float, sigma_next: float, eta: float = 1.0) -> Tuple[float, float]:
+def _ancestral_step(sigma: float, sigma_next: float, eta: float = 1.0) -> tuple[float, float]:
     """Return (sigma_down, sigma_up) for one ancestral step."""
     if sigma_next == 0:
         return 0.0, 0.0
@@ -226,16 +227,16 @@ def _ancestral_step(sigma: float, sigma_next: float, eta: float = 1.0) -> Tuple[
 
 def sample_euler(
     model: Callable,
-    x: "Any",
+    x: Any,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     s_churn: float = 0.,
     s_tmin: float = 0.,
     s_tmax: float = float("inf"),
     s_noise: float = 1.,
-    noise_state: Optional[_NoiseState] = None,
+    noise_state: _NoiseState | None = None,
 ) -> torch.Tensor:
     """Euler ODE sampler (JAX). Mirrors ``k_diffusion.sampling.sample_euler``."""
     import jax.numpy as jnp
@@ -266,15 +267,15 @@ def sample_euler(
 
 def sample_euler_ancestral(
     model: Callable,
-    x: "Any",
+    x: Any,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
-    noise_sampler: Optional[Callable] = None,
-    noise_state: Optional[_NoiseState] = None,
+    noise_sampler: Callable | None = None,
+    noise_state: _NoiseState | None = None,
 ) -> torch.Tensor:
     """Euler ancestral sampler (JAX)."""
     import jax.numpy as jnp
@@ -304,16 +305,16 @@ def sample_euler_ancestral(
 
 def sample_heun(
     model: Callable,
-    x: "Any",
+    x: Any,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     s_churn: float = 0.,
     s_tmin: float = 0.,
     s_tmax: float = float("inf"),
     s_noise: float = 1.,
-    noise_state: Optional[_NoiseState] = None,
+    noise_state: _NoiseState | None = None,
 ) -> torch.Tensor:
     """Heun 2nd-order ODE sampler (JAX)."""
     import jax.numpy as jnp
@@ -353,17 +354,17 @@ def sample_heun(
 
 def sample_dpmpp_2m(
     model: Callable,
-    x: "Any",
+    x: Any,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
 ) -> torch.Tensor:
     """DPM++ 2M multistep ODE sampler (JAX)."""
     import jax.numpy as jnp
 
-    old_denoised: Optional[Any] = None
-    h_last: Optional[float] = None
+    old_denoised: Any | None = None
+    h_last: float | None = None
     n = len(sigmas) - 1
     progress = _ProgressState()
 
@@ -401,16 +402,16 @@ def sample_dpmpp_2m(
 
 def sample_dpmpp_sde(
     model: Callable,
-    x: "Any",
+    x: Any,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
     r: float = 0.5,
-    noise_sampler: Optional[Callable] = None,
-    noise_state: Optional[_NoiseState] = None,
+    noise_sampler: Callable | None = None,
+    noise_state: _NoiseState | None = None,
 ) -> torch.Tensor:
     """DPM++ SDE sampler (JAX).
 
@@ -470,16 +471,16 @@ def sample_dpmpp_sde(
 
 def sample_dpmpp_2m_sde(
     model: Callable,
-    x: "Any",
+    x: Any,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
     solver_type: str = "midpoint",
-    noise_sampler: Optional[Callable] = None,
-    noise_state: Optional[_NoiseState] = None,
+    noise_sampler: Callable | None = None,
+    noise_state: _NoiseState | None = None,
 ) -> torch.Tensor:
     """DPM++ 2M SDE sampler (JAX).
 
@@ -499,8 +500,8 @@ def sample_dpmpp_2m_sde(
     import jax.numpy as jnp
 
     noise_state = noise_state or _NoiseState()
-    old_denoised: Optional[Any] = None
-    lam_prev: Optional[float] = None
+    old_denoised: Any | None = None
+    lam_prev: float | None = None
     n = len(sigmas) - 1
     progress = _ProgressState()
 
@@ -545,15 +546,15 @@ def sample_dpmpp_2m_sde(
 
 def sample_dpmpp_3m_sde(
     model: Callable,
-    x: "Any",
+    x: Any,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
-    noise_sampler: Optional[Callable] = None,
-    noise_state: Optional[_NoiseState] = None,
+    noise_sampler: Callable | None = None,
+    noise_state: _NoiseState | None = None,
 ) -> torch.Tensor:
     """DPM++ 3M SDE sampler (JAX).
 
@@ -582,10 +583,10 @@ def sample_dpmpp_3m_sde(
     noise_state = noise_state or _NoiseState()
 
     # Denoised history (D_prev1 = last step, D_prev2 = two steps ago)
-    D_prev1: Optional[Any] = None
-    D_prev2: Optional[Any] = None
-    lam_1: Optional[float] = None  # lam from previous step
-    lam_2: Optional[float] = None  # lam from two steps ago
+    D_prev1: Any | None = None
+    D_prev2: Any | None = None
+    lam_1: float | None = None  # lam from previous step
+    lam_2: float | None = None  # lam from two steps ago
     n = len(sigmas) - 1
     progress = _ProgressState()
 
@@ -642,7 +643,7 @@ def sample_dpmpp_3m_sde(
 # -- dispatch map --------------------------------------------------------------
 
 #: Maps k-diffusion funcname -> JAX sampler function.
-JAX_SAMPLER_MAP: Dict[str, Callable] = {
+JAX_SAMPLER_MAP: dict[str, Callable] = {
     "sample_euler": sample_euler,
     "sample_euler_ancestral": sample_euler_ancestral,
     "sample_heun": sample_heun,
@@ -674,10 +675,10 @@ def make_jax_func(
     def _wrapper(
         _model_wrap_cfg: Any,  # ignored — JAXCFGDenoiser handles this
         x_torch: torch.Tensor,
-        sigmas: Optional[torch.Tensor] = None,
-        extra_args: Optional[Dict] = None,
-        callback: Optional[Callable] = None,
-        disable: Optional[bool] = None,
+        sigmas: torch.Tensor | None = None,
+        extra_args: dict | None = None,
+        callback: Callable | None = None,
+        disable: bool | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         import jax.numpy as jnp

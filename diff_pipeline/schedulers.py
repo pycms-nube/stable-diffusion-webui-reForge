@@ -31,7 +31,7 @@ Sources
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch  # type: ignore[import-not-found]
 
@@ -115,8 +115,8 @@ _SDXL_SCHEDULER_CONFIG: dict = {
 def get_diffusers_sigmas(
     scheduler_name: str,
     n: int,
-    device: "torch.device",
-) -> "Optional[torch.Tensor]":
+    device: torch.device,
+) -> torch.Tensor | None:
     """Return a sigma tensor produced by the Diffusers scheduler that
     corresponds to *scheduler_name*, or ``None`` if no mapping exists.
 
@@ -164,7 +164,7 @@ def get_diffusers_sigmas(
         kwargs.update(extra_kwargs)
 
         # _ays_key is a private marker — not a constructor kwarg.
-        ays_key: Optional[str] = kwargs.pop("_ays_key", None)
+        ays_key: str | None = kwargs.pop("_ays_key", None)
 
         hf_scheduler = scheduler_cls(**kwargs)
 

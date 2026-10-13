@@ -48,7 +48,7 @@ class Script(scripts.Script):
     def load_resolutions(self, config_file, default_list):
         if os.path.exists(config_file):
             try:
-                with open(config_file, 'r') as f:
+                with open(config_file) as f:
                     return json.load(f)
             except Exception:
                 return default_list

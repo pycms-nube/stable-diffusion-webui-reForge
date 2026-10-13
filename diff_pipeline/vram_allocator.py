@@ -65,7 +65,8 @@ import logging
 import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -118,7 +119,7 @@ class VRAMTrackerDispatch(_TorchDispatchMode):  # type: ignore[misc]
     via ``_suppressing_tracking`` to avoid double-counting parameters.
     """
 
-    def __init__(self, allocator: "VRAMAllocator") -> None:
+    def __init__(self, allocator: VRAMAllocator) -> None:
         if _HAS_DISPATCH_MODE:
             super().__init__()
         self._allocator = allocator
@@ -186,7 +187,7 @@ class Allocation:
     on_device: bool = False
     gen: int = GEN_HOT           # generation counter: higher = warmer
     in_free_list: bool = False   # True when backing object is orphaned / dead
-    _hook_handles: List[Any] = field(default_factory=list, repr=False)
+    _hook_handles: list[Any] = field(default_factory=list, repr=False)
     _module_ref: Any = field(default=None, repr=False)  # weakref to module
 
     def remove_hooks(self) -> None:
@@ -208,19 +209,19 @@ class VRAMAllocator:
     Use ``VRAMAllocator.get(device)`` — one shared instance per CUDA device.
     """
 
-    _instances: Dict[str, "VRAMAllocator"] = {}
+    _instances: dict[str, VRAMAllocator] = {}
 
     def __init__(self, device: torch.device) -> None:
         self._device = device
         # LRU-ordered residents: insertion order = recency (newest at end).
         self._lru: OrderedDict[str, Allocation] = OrderedDict()
         # All registered allocations (resident or not).
-        self._registry: Dict[str, Allocation] = {}
+        self._registry: dict[str, Allocation] = {}
         # Byte reservations for unmanaged on-device memory.
         # Key "_tk_<ptr>" entries are managed by VRAMTrackerDispatch.
-        self._reservations: Dict[str, int] = {}
+        self._reservations: dict[str, int] = {}
         # Keep weakrefs alive so finalizers fire when tensors are GC'd.
-        self._tracked_tensor_refs: Dict[int, "weakref.ref[torch.Tensor]"] = {}
+        self._tracked_tensor_refs: dict[int, weakref.ref[torch.Tensor]] = {}
         # Suppresses VRAMTrackerDispatch tracking during module .to() calls.
         self._suppressing_tracking: bool = False
         log.info("VRAMAllocator: created for device %s", device)
@@ -230,7 +231,7 @@ class VRAMAllocator:
     # ------------------------------------------------------------------
 
     @classmethod
-    def get(cls, device: torch.device) -> "VRAMAllocator":
+    def get(cls, device: torch.device) -> VRAMAllocator:
         """Return the shared VRAMAllocator for *device*, creating if needed."""
         key = f"{device.type}:{device.index if device.index is not None else 0}"
         if key not in cls._instances:
@@ -258,8 +259,8 @@ class VRAMAllocator:
         module: nn.Module,
         *,
         pinned: bool = False,
-        hook_submodules: Optional[List[str]] = None,
-    ) -> "Allocation":
+        hook_submodules: list[str] | None = None,
+    ) -> Allocation:
         """Register an ``nn.Module`` as a managed VRAM allocation.
 
         A ``forward_pre_hook`` is installed so ``activate(name)`` fires
@@ -328,7 +329,7 @@ class VRAMAllocator:
         alloc._module_ref = weakref.ref(module, _on_module_gc)
 
         # Collect hook targets.
-        hook_targets: List[nn.Module] = []
+        hook_targets: list[nn.Module] = []
         if hook_submodules:
             for dotted in hook_submodules:
                 sub = module
@@ -383,7 +384,7 @@ class VRAMAllocator:
         *,
         pinned: bool = False,
         on_device: bool = False,
-    ) -> "Allocation":
+    ) -> Allocation:
         """Register a custom load/evict pair (non-module allocations)."""
         alloc = Allocation(
             name=name,
@@ -486,7 +487,7 @@ class VRAMAllocator:
 
         needed = alloc.size_fn()
 
-        evicted: List[str] = []
+        evicted: list[str] = []
         while self._effective_free() < needed:
             victim = self._lru_candidate()
             if victim is None:
@@ -652,7 +653,7 @@ class VRAMAllocator:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _lru_candidate(self) -> Optional[str]:
+    def _lru_candidate(self) -> str | None:
         """Select the best eviction victim.
 
         Priority:
@@ -751,7 +752,7 @@ class VRAMAllocator:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def latent_vram_bytes(shape: Tuple[int, ...], dtype: torch.dtype) -> int:
+def latent_vram_bytes(shape: tuple[int, ...], dtype: torch.dtype) -> int:
     """Estimate VRAM cost for a latent tensor of *shape* and *dtype*."""
     numel = 1
     for s in shape:

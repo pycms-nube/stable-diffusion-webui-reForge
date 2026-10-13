@@ -137,7 +137,7 @@ class _FakeCondStageModel:
 
     # ---- textual inversion support ---------------------------------------
 
-    def encode_embedding_init_text(self, init_text: str, nvpt: int) -> "torch.Tensor":
+    def encode_embedding_init_text(self, init_text: str, nvpt: int) -> torch.Tensor:
         """Return the token embedding(s) for *init_text*, truncated/padded to *nvpt*.
 
         Used by textual_inversion to determine the expected embedding shape.

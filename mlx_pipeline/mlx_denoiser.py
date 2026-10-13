@@ -27,7 +27,7 @@ KDiffusionSampler stores in ``sampler_extra_args``:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 
 # ── tensor helpers ─────────────────────────────────────────────────────────────
 
-def _t2m(t: torch.Tensor, dtype=None) -> "mx.array":
+def _t2m(t: torch.Tensor, dtype=None) -> mx.array:
     """torch → MLX (bfloat16 by default; float32 when dtype=mx.float32)."""
     import mlx.core as mx
     arr = t.detach().float().cpu().numpy()
@@ -49,7 +49,7 @@ def _t2m(t: torch.Tensor, dtype=None) -> "mx.array":
     return a.astype(dtype if dtype is not None else mx.bfloat16)
 
 
-def _m2t(a: "mx.array") -> torch.Tensor:
+def _m2t(a: mx.array) -> torch.Tensor:
     """MLX → torch float32 CPU.
 
     np.array() triggers implicit MLX evaluation — no explicit eval needed.
@@ -60,7 +60,7 @@ def _m2t(a: "mx.array") -> torch.Tensor:
 
 # ── conditioning extraction ─────────────────────────────────────────────────────
 
-def _get_raw_cond_dict(cond_obj: Any) -> Optional[Dict]:
+def _get_raw_cond_dict(cond_obj: Any) -> dict | None:
     """
     Extract the raw conditioning dict from whatever format KDiffusionSampler
     stores in ``sampler_extra_args``.
@@ -94,8 +94,8 @@ def _get_raw_cond_dict(cond_obj: Any) -> Optional[Dict]:
 def _extract_cond_mx(
     cond_obj: Any,
     B: int,
-    latent_hw: Tuple[int, int],
-) -> Tuple["mx.array", "mx.array", "mx.array"]:
+    latent_hw: tuple[int, int],
+) -> tuple[mx.array, mx.array, mx.array]:
     """
     Extract encoder_hidden_states [B, S, 2048], text_embeds [B, 1280],
     and time_ids [B, 6] as MLX bfloat16 / float32 arrays from the raw
@@ -161,10 +161,10 @@ class MLXCFGDenoiser:
 
     def __init__(
         self,
-        mlx_unet: "SDXLUNet",
+        mlx_unet: SDXLUNet,
         model_sampling: Any,
-        extra_args: Dict,
-        latent_shape: Tuple[int, ...],
+        extra_args: dict,
+        latent_shape: tuple[int, ...],
     ) -> None:
         import mlx.core as mx
 
@@ -197,7 +197,7 @@ class MLXCFGDenoiser:
 
     # ── sigma ops (all in MLX) ────────────────────────────────────────────────
 
-    def _timestep(self, sigma: "mx.array") -> "mx.array":
+    def _timestep(self, sigma: mx.array) -> mx.array:
         """sigma [B] float32 → nearest discrete timestep [B] float32."""
         import mlx.core as mx
         log_s = mx.log(sigma)                                          # [B]
@@ -205,7 +205,7 @@ class MLXCFGDenoiser:
         return mx.argmin(diff, axis=1).astype(mx.float32)              # [B]
 
     @staticmethod
-    def _calc_input(sigma: "mx.array", x: "mx.array") -> "mx.array":
+    def _calc_input(sigma: mx.array, x: mx.array) -> mx.array:
         """EPS preconditioning: xc = x / √(σ²+1)."""
         import mlx.core as mx
         s = sigma.reshape((-1, 1, 1, 1)).astype(mx.float32)
@@ -213,8 +213,8 @@ class MLXCFGDenoiser:
 
     @staticmethod
     def _calc_denoised(
-        sigma: "mx.array", model_out: "mx.array", x: "mx.array"
-    ) -> "mx.array":
+        sigma: mx.array, model_out: mx.array, x: mx.array
+    ) -> mx.array:
         """EPS postconditioning: denoised = x - model_out * σ.
 
         Returns float32 to match the reference (model_base.py line 194:
@@ -229,10 +229,10 @@ class MLXCFGDenoiser:
 
     def __call__(
         self,
-        x: "mx.array",
-        sigma: "mx.array",
+        x: mx.array,
+        sigma: mx.array,
         **_kwargs: Any,       # absorb extra_args kwargs forwarded by sampler
-    ) -> "mx.array":
+    ) -> mx.array:
         """
         x     : [B, 4, H, W]  bfloat16
         sigma : [B]            float32

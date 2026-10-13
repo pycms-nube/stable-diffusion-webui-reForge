@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
 import requests

@@ -6,7 +6,6 @@ from modules import shared, sd_models
 from lib_controlnet.enums import StableDiffusionVersion
 from modules_forge.shared import controlnet_dir, supported_preprocessors
 
-from typing import Tuple, List
 
 CN_MODEL_EXTS = [".pt", ".pth", ".ckpt", ".safetensors", ".bin", ".patch"]
 
@@ -154,7 +153,7 @@ def get_sd_version() -> StableDiffusionVersion:
 def select_control_type(
     control_type: str,
     sd_version: StableDiffusionVersion = StableDiffusionVersion.UNKNOWN,
-) -> Tuple[List[str], List[str], str, str]:
+) -> tuple[list[str], list[str], str, str]:
     global controlnet_names
 
     pattern = control_type.lower()

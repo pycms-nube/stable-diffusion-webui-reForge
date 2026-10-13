@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 import torch
@@ -52,7 +53,7 @@ log = logging.getLogger(__name__)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _to_torch(a: "mx.array") -> torch.Tensor:
+def _to_torch(a: mx.array) -> torch.Tensor:
     """MLX → CPU torch float32.
 
     np.array() implicitly evaluates the MLX array, so no explicit
@@ -62,13 +63,13 @@ def _to_torch(a: "mx.array") -> torch.Tensor:
     return torch.from_numpy(np.array(a.astype(mx.float32)).copy()).float()
 
 
-def _randn_like(x: "mx.array") -> "mx.array":
+def _randn_like(x: mx.array) -> mx.array:
     """Standard-Gaussian noise matching shape and dtype of x."""
     import mlx.core as mx
     return mx.random.normal(shape=x.shape).astype(x.dtype)
 
 
-def _callback(cb, i: int, sigma_t: torch.Tensor, x: "mx.array", denoised: "mx.array"):
+def _callback(cb, i: int, sigma_t: torch.Tensor, x: mx.array, denoised: mx.array):
     """Fire a webui progress callback, converting MLX arrays back to torch."""
     if cb is None:
         return
@@ -83,7 +84,7 @@ def _callback(cb, i: int, sigma_t: torch.Tensor, x: "mx.array", denoised: "mx.ar
     })
 
 
-def _ancestral_step(sigma: float, sigma_next: float, eta: float = 1.0) -> Tuple[float, float]:
+def _ancestral_step(sigma: float, sigma_next: float, eta: float = 1.0) -> tuple[float, float]:
     """Return (sigma_down, sigma_up) for one ancestral step."""
     if sigma_next == 0:
         return 0.0, 0.0
@@ -97,11 +98,11 @@ def _ancestral_step(sigma: float, sigma_next: float, eta: float = 1.0) -> Tuple[
 
 def sample_euler(
     model: Callable,
-    x: "mx.array",
+    x: mx.array,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     s_churn: float = 0.,
     s_tmin: float = 0.,
     s_tmax: float = float("inf"),
@@ -135,14 +136,14 @@ def sample_euler(
 
 def sample_euler_ancestral(
     model: Callable,
-    x: "mx.array",
+    x: mx.array,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
-    noise_sampler: Optional[Callable] = None,
+    noise_sampler: Callable | None = None,
 ) -> torch.Tensor:
     """Euler ancestral sampler (MLX)."""
     import mlx.core as mx
@@ -171,11 +172,11 @@ def sample_euler_ancestral(
 
 def sample_heun(
     model: Callable,
-    x: "mx.array",
+    x: mx.array,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     s_churn: float = 0.,
     s_tmin: float = 0.,
     s_tmax: float = float("inf"),
@@ -218,17 +219,17 @@ def sample_heun(
 
 def sample_dpmpp_2m(
     model: Callable,
-    x: "mx.array",
+    x: mx.array,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
 ) -> torch.Tensor:
     """DPM++ 2M multistep ODE sampler (MLX)."""
     import mlx.core as mx
 
-    old_denoised: Optional["mx.array"] = None
-    h_last: Optional[float] = None
+    old_denoised: mx.array | None = None
+    h_last: float | None = None
     n = len(sigmas) - 1
 
     for i in range(n):
@@ -266,15 +267,15 @@ def sample_dpmpp_2m(
 
 def sample_dpmpp_sde(
     model: Callable,
-    x: "mx.array",
+    x: mx.array,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
     r: float = 0.5,
-    noise_sampler: Optional[Callable] = None,
+    noise_sampler: Callable | None = None,
 ) -> torch.Tensor:
     """DPM++ SDE sampler (MLX).
 
@@ -333,15 +334,15 @@ def sample_dpmpp_sde(
 
 def sample_dpmpp_2m_sde(
     model: Callable,
-    x: "mx.array",
+    x: mx.array,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
     solver_type: str = "midpoint",
-    noise_sampler: Optional[Callable] = None,
+    noise_sampler: Callable | None = None,
 ) -> torch.Tensor:
     """DPM++ 2M SDE sampler (MLX).
 
@@ -360,8 +361,8 @@ def sample_dpmpp_2m_sde(
     """
     import mlx.core as mx
 
-    old_denoised:  Optional["mx.array"] = None
-    lam_prev: Optional[float] = None
+    old_denoised:  mx.array | None = None
+    lam_prev: float | None = None
     n = len(sigmas) - 1
 
     for i in range(n):
@@ -406,14 +407,14 @@ def sample_dpmpp_2m_sde(
 
 def sample_dpmpp_3m_sde(
     model: Callable,
-    x: "mx.array",
+    x: mx.array,
     sigmas: torch.Tensor,
-    extra_args: Optional[Dict] = None,
-    callback: Optional[Callable] = None,
-    disable: Optional[bool] = None,
+    extra_args: dict | None = None,
+    callback: Callable | None = None,
+    disable: bool | None = None,
     eta: float = 1.,
     s_noise: float = 1.,
-    noise_sampler: Optional[Callable] = None,
+    noise_sampler: Callable | None = None,
 ) -> torch.Tensor:
     """DPM++ 3M SDE sampler (MLX).
 
@@ -440,10 +441,10 @@ def sample_dpmpp_3m_sde(
     import mlx.core as mx
 
     # Denoised history (D_prev1 = last step, D_prev2 = two steps ago)
-    D_prev1: Optional["mx.array"] = None
-    D_prev2: Optional["mx.array"] = None
-    lam_1:   Optional[float]      = None   # lam from previous step
-    lam_2:   Optional[float]      = None   # lam from two steps ago
+    D_prev1: mx.array | None = None
+    D_prev2: mx.array | None = None
+    lam_1:   float | None      = None   # lam from previous step
+    lam_2:   float | None      = None   # lam from two steps ago
     n = len(sigmas) - 1
 
     for i in range(n):
@@ -500,7 +501,7 @@ def sample_dpmpp_3m_sde(
 # ── dispatch map ───────────────────────────────────────────────────────────────
 
 #: Maps k-diffusion funcname → MLX sampler function.
-MLX_SAMPLER_MAP: Dict[str, Callable] = {
+MLX_SAMPLER_MAP: dict[str, Callable] = {
     "sample_euler":           sample_euler,
     "sample_euler_ancestral": sample_euler_ancestral,
     "sample_heun":            sample_heun,
@@ -533,10 +534,10 @@ def make_mlx_func(
     def _wrapper(
         _model_wrap_cfg: Any,    # ignored — MLXCFGDenoiser handles this
         x_torch: torch.Tensor,
-        sigmas: Optional[torch.Tensor] = None,
-        extra_args: Optional[Dict] = None,
-        callback: Optional[Callable] = None,
-        disable: Optional[bool] = None,
+        sigmas: torch.Tensor | None = None,
+        extra_args: dict | None = None,
+        callback: Callable | None = None,
+        disable: bool | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         import mlx.core as mx

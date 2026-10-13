@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -71,7 +70,7 @@ def _gelu(x):
 
 # -- primitive layers ------------------------------------------------------------
 
-def linear(params: Dict[str, "jnp.ndarray"], prefix: str, x):
+def linear(params: dict[str, jnp.ndarray], prefix: str, x):
     w = params[f"{prefix}.weight"]  # [out, in]
     b = params.get(f"{prefix}.bias")
     out = x @ w.T
@@ -130,7 +129,7 @@ def clip_layer(params, prefix, x, mask, num_heads: int, activation):
 # -- top-level encode ------------------------------------------------------------
 
 def clip_encode(
-    params: Dict[str, "jnp.ndarray"],
+    params: dict[str, jnp.ndarray],
     tokens,
     num_layers: int,
     num_heads: int,
@@ -170,7 +169,7 @@ def clip_encode(
 
 # -- weight loading ----------------------------------------------------------
 
-def _tensor_to_jax(tensor: "torch.Tensor", dtype, sharding=None):
+def _tensor_to_jax(tensor: torch.Tensor, dtype, sharding=None):
     """``sharding``, when given, is passed as ``jnp.asarray``'s ``device=``
     argument so the array lands directly where the caller wants it (e.g.
     pinned host memory, on a phase-managed card) instead of defaulting to
@@ -183,7 +182,7 @@ def _tensor_to_jax(tensor: "torch.Tensor", dtype, sharding=None):
     return jnp.asarray(arr, dtype=dtype, device=sharding)
 
 
-def load_clip_params(transformer, dtype=None, sharding=None) -> Dict[str, "jnp.ndarray"]:
+def load_clip_params(transformer, dtype=None, sharding=None) -> dict[str, jnp.ndarray]:
     if dtype is None:
         dtype = jnp.bfloat16
     sd = transformer.state_dict()
@@ -198,7 +197,7 @@ class JAXCLIPTextEncoder:
 
     def __init__(
         self,
-        params: Dict[str, "jnp.ndarray"],
+        params: dict[str, jnp.ndarray],
         num_layers: int,
         num_heads: int,
         layer_idx: int,
@@ -217,7 +216,7 @@ class JAXCLIPTextEncoder:
         )
         self._encode_jit = jax.jit(fn)
 
-    def encode(self, tokens: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def encode(self, tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         """tokens: [B, 77] torch long -> (z [B,77,D] float32, pooled [B,D] float32 or None)."""
         tok_np = tokens.detach().cpu().numpy().astype(np.int32)
         tok_jax = jnp.asarray(tok_np)
@@ -228,7 +227,7 @@ class JAXCLIPTextEncoder:
         z_np = np.asarray(jnp.asarray(intermediate, dtype=jnp.float32))
         z = torch.from_numpy(z_np.copy()).float()
 
-        pooled_t: Optional[torch.Tensor] = None
+        pooled_t: torch.Tensor | None = None
         if pooled is not None:
             pooled_np = np.asarray(jnp.asarray(pooled, dtype=jnp.float32))
             pooled_t = torch.from_numpy(pooled_np.copy()).float()
@@ -241,10 +240,10 @@ def build_clip_text_encoder(
     layer_idx: int = -2,
     has_text_projection: bool = True,
     activation=None,
-    text_projection_param: Optional["torch.Tensor"] = None,
+    text_projection_param: torch.Tensor | None = None,
     dtype=None,
     sharding=None,
-) -> "JAXCLIPTextEncoder":
+) -> JAXCLIPTextEncoder:
     """Build a JAXCLIPTextEncoder from an ldm_patched CLIPTextModel.
 
     Parameters mirror mlx_pipeline.clip.build_clip_encoder exactly,

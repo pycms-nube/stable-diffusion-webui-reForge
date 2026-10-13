@@ -144,7 +144,7 @@ def ipadapter_model_loader(file):
         model["ip_adapter"] = model.pop("adapter_modules")
 
     if "ip_adapter" not in model.keys() or not model["ip_adapter"]:
-        raise Exception("invalid IPAdapter model {}".format(file))
+        raise Exception(f"invalid IPAdapter model {file}")
 
     if 'plusv2' in file.lower():
         model["faceidplusv2"] = True

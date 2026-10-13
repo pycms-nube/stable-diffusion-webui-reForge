@@ -32,7 +32,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ _VRAM_TOLERANCE_BYTES = 512 * 1024 * 1024  # 512MB
 _SCHEMA_VERSION = "v3"
 
 
-def _load_db() -> List[Dict[str, Any]]:
+def _load_db() -> list[dict[str, Any]]:
     try:
         with open(_DB_PATH) as f:
             return json.load(f)
@@ -92,7 +92,7 @@ def _load_db() -> List[Dict[str, Any]]:
         return []
 
 
-def _save_db(entries: List[Dict[str, Any]]) -> None:
+def _save_db(entries: list[dict[str, Any]]) -> None:
     try:
         os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
         tmp_path = _DB_PATH + ".tmp"
@@ -123,7 +123,7 @@ def compute_signature(
     )
 
 
-def lookup_exact(signature: str) -> Optional[Dict[str, Any]]:
+def lookup_exact(signature: str) -> dict[str, Any] | None:
     for entry in _load_db():
         if entry.get("signature") == signature:
             return entry
@@ -133,7 +133,7 @@ def lookup_exact(signature: str) -> Optional[Dict[str, Any]]:
 def lookup_closest(
     component: str, device_name: str, total_vram_bytes: int,
     latent_h: int, latent_w: int, batch: int, seq_len: int,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Best-effort "close enough" match when there's no exact signature
     hit — same component/device/batch (those never fuzzy-match: a
     decision benchmarked for one GPU or one component isn't meaningful
@@ -179,7 +179,7 @@ def lookup_closest(
 def save(
     component: str, signature: str, device_name: str, total_vram_bytes: int,
     latent_h: int, latent_w: int, batch: int, seq_len: int,
-    decision: str, stats: Dict[str, Any],
+    decision: str, stats: dict[str, Any],
 ) -> None:
     """Record a fusion-level decision (+ the benchmark stats that
     justified it, kept for debugging/inspection) — replaces any existing

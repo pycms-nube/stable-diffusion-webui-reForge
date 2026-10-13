@@ -50,7 +50,8 @@ from __future__ import annotations
 
 import logging
 import torch
-from typing import Callable, Optional, Any
+from typing import Any
+from collections.abc import Callable
 
 from diff_pipeline._cache import lru_cached
 
@@ -61,7 +62,7 @@ log = logging.getLogger(__name__)
 # Hardware-aware dtype selection — bf16 > fp32 > fp16
 # ---------------------------------------------------------------------------
 
-def preferred_unet_dtype(device: "torch.device | None" = None) -> torch.dtype:
+def preferred_unet_dtype(device: torch.device | None = None) -> torch.dtype:
     """Return the best compute dtype for the UNet on *device*.
 
     Priority: bf16 > fp32 > fp16
@@ -127,7 +128,7 @@ def unregister_path_hijack(loader: Callable) -> None:
     _PATH_HIJACK_REGISTRY = [(p, ldr) for p, ldr in _PATH_HIJACK_REGISTRY if ldr is not loader]
 
 
-def maybe_apply_path_hijack(checkpoint_info) -> Optional[Any]:
+def maybe_apply_path_hijack(checkpoint_info) -> Any | None:
     """Try each registered path hijack in order.
 
     Called from sd_models.load_model() BEFORE get_checkpoint_state_dict().
@@ -198,7 +199,7 @@ def maybe_apply_path_hijack(checkpoint_info) -> Optional[Any]:
 # ---------------------------------------------------------------------------
 
 @lru_cached
-def _read_safetensors_tensor_keys(filename: str) -> Optional[set]:
+def _read_safetensors_tensor_keys(filename: str) -> set | None:
     """Read only tensor key names from a safetensors header — zero weight loading.
 
     The safetensors format begins with an 8-byte little-endian length followed

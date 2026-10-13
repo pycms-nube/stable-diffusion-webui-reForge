@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
+from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def lru_cached(fn: F) -> F:
     """
     # _inner holds either the lru_cache-wrapped function, or the raw function
     # when caching is disabled (maxsize == 0).
-    _inner: Optional[Callable] = None
+    _inner: Callable | None = None
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:

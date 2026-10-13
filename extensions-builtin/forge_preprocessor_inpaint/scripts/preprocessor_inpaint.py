@@ -106,7 +106,7 @@ class PreprocessorInpaintLama(PreprocessorInpaintOnly):
         remote_model_path = "https://huggingface.co/lllyasviel/Annotators/resolve/main/ControlNetLama.pth"
         model_path = load_file_from_url(remote_model_path, model_dir=preprocessor_dir)
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lama_config.yaml')
-        cfg = yaml.safe_load(open(config_path, 'rt'))
+        cfg = yaml.safe_load(open(config_path))
         cfg = OmegaConf.create(cfg)
         cfg.training_model.predict_only = True
         cfg.visualizer.kind = 'noop'

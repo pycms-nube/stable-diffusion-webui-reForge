@@ -72,7 +72,7 @@ time.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple
 
 log = logging.getLogger(__name__)
 
@@ -110,8 +110,8 @@ class AtomSpec(NamedTuple):
     block_id: str
     kind: str
     run: Any
-    produces: Tuple[str, ...] = ()
-    consumes: Tuple[str, ...] = ()
+    produces: tuple[str, ...] = ()
+    consumes: tuple[str, ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -171,7 +171,7 @@ def _make_downsample_atom(block_id: str) -> AtomSpec:
     return AtomSpec(block_id, "downsample", run)
 
 
-def _make_upsample_atom(block_id: str, target_hw: Optional[Tuple[int, int]]) -> AtomSpec:
+def _make_upsample_atom(block_id: str, target_hw: tuple[int, int] | None) -> AtomSpec:
     from jax_pipeline.unet import upsample_2d
 
     def run(params, ctx):
@@ -267,7 +267,7 @@ def _with_skip_concat(inner: AtomSpec, skip_id: str) -> AtomSpec:
 #  Full atom sequence — mirrors jax_pipeline.unet.unet_forward exactly
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _transformer_2d_atoms(prefix: str, num_layers: int, num_heads: int, H: int, W: int, C: int) -> List[AtomSpec]:
+def _transformer_2d_atoms(prefix: str, num_layers: int, num_heads: int, H: int, W: int, C: int) -> list[AtomSpec]:
     residual_id = f"_residual::{prefix}"
     atoms = [_make_attn_norm_proj_in_atom(prefix, residual_id)]
     for i in range(num_layers):
@@ -276,7 +276,7 @@ def _transformer_2d_atoms(prefix: str, num_layers: int, num_heads: int, H: int, 
     return atoms
 
 
-def build_atom_specs(latent_h: int, latent_w: int) -> List[AtomSpec]:
+def build_atom_specs(latent_h: int, latent_w: int) -> list[AtomSpec]:
     """Build the full ~129-atom sequence for one specific input latent
     resolution — exact execution order, exact math, matching
     ``jax_pipeline.unet.unet_forward``/``build_block_ids()``.
@@ -292,7 +292,7 @@ def build_atom_specs(latent_h: int, latent_w: int) -> List[AtomSpec]:
     H1, W1 = _downsample_out(H0), _downsample_out(W0)
     H2, W2 = _downsample_out(H1), _downsample_out(W1)
 
-    atoms: List[AtomSpec] = [
+    atoms: list[AtomSpec] = [
         _make_time_embedding_atom(),
         _make_add_embedding_atom(),
     ]
@@ -357,7 +357,7 @@ def build_atom_specs(latent_h: int, latent_w: int) -> List[AtomSpec]:
     return atoms
 
 
-def _with_skip_push_last(atom_list: List[AtomSpec], skip_id: str) -> List[AtomSpec]:
+def _with_skip_push_last(atom_list: list[AtomSpec], skip_id: str) -> list[AtomSpec]:
     """Attach a skip-push to the LAST atom of an already-built list
     (used for cross-attn down-block iterations, where the skip is
     pushed after the whole attention sub-stack, not after the resnet).
@@ -365,7 +365,7 @@ def _with_skip_push_last(atom_list: List[AtomSpec], skip_id: str) -> List[AtomSp
     return atom_list[:-1] + [_with_skip_push(atom_list[-1], skip_id)]
 
 
-def named_value_shapes(latent_h: int, latent_w: int) -> Dict[str, Tuple[int, int, int]]:
+def named_value_shapes(latent_h: int, latent_w: int) -> dict[str, tuple[int, int, int]]:
     """(H, W, C) for every named value ``build_atom_specs`` can produce,
     at this latent resolution — batch-independent, so
     ``jax_pipeline.segment_search`` can derive exact byte sizes as
@@ -400,7 +400,7 @@ def named_value_shapes(latent_h: int, latent_w: int) -> Dict[str, Tuple[int, int
     return shapes
 
 
-def partition_params_for_atoms(flat_params: Dict[str, Any], atoms: List[AtomSpec]) -> Dict[str, Dict[str, Any]]:
+def partition_params_for_atoms(flat_params: dict[str, Any], atoms: list[AtomSpec]) -> dict[str, dict[str, Any]]:
     """Partition a flat ``{hf_key: array}`` params dict into per-atom
     sub-dicts, keyed by each atom's ``block_id`` — same strict-coverage
     philosophy as ``jax_pipeline.block_cache.partition_params_by_block``
@@ -414,7 +414,7 @@ def partition_params_for_atoms(flat_params: Dict[str, Any], atoms: List[AtomSpec
     ``"{prefix}.proj_out.*"`` respectively) the way every other atom's
     does.
     """
-    by_block: Dict[str, Dict[str, Any]] = {}
+    by_block: dict[str, dict[str, Any]] = {}
     claimed = set()
     for atom in atoms:
         bid = atom.block_id
@@ -446,17 +446,17 @@ def partition_params_for_atoms(flat_params: Dict[str, Any], atoms: List[AtomSpec
     return by_block
 
 
-def compute_weight_bytes(flat_params: Dict[str, Any], atoms: List[AtomSpec]) -> Dict[str, int]:
+def compute_weight_bytes(flat_params: dict[str, Any], atoms: list[AtomSpec]) -> dict[str, int]:
     """Exact (no tracing needed) weight footprint per atom block_id."""
     by_block = partition_params_for_atoms(flat_params, atoms)
     return {bid: sum(int(v.nbytes) for v in sub.values()) for bid, sub in by_block.items()}
 
 
-def block_ids_in_order(atoms: List[AtomSpec]) -> List[str]:
+def block_ids_in_order(atoms: list[AtomSpec]) -> list[str]:
     """Unique block_ids in first-appearance order — for building/
     partitioning a BlockParamCache the same way build_block_ids() does.
     """
-    seen: Dict[str, None] = {}
+    seen: dict[str, None] = {}
     for a in atoms:
         seen.setdefault(a.block_id, None)
     return list(seen.keys())
@@ -485,8 +485,8 @@ class PendingValueStore:
 
     def __init__(self, device):
         self._device = device
-        self._entries: Dict[str, Any] = {}
-        self._on_host: Dict[str, bool] = {}
+        self._entries: dict[str, Any] = {}
+        self._on_host: dict[str, bool] = {}
 
     def put(self, value_id: str, array) -> None:
         self._entries[value_id] = array
@@ -515,10 +515,10 @@ class PendingValueStore:
             return staged
         return arr
 
-    def pending_ids(self) -> List[str]:
+    def pending_ids(self) -> list[str]:
         return list(self._entries.keys())
 
-    def device_resident_ids(self) -> List[str]:
+    def device_resident_ids(self) -> list[str]:
         return [vid for vid, on_host in self._on_host.items() if not on_host]
 
     def nbytes(self, value_id: str) -> int:
@@ -538,7 +538,7 @@ class PendingValueStore:
 #  Segment compiler + driver
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compile_segment(atoms: List[AtomSpec]):
+def compile_segment(atoms: list[AtomSpec]):
     """Fuse a contiguous range of atoms into ONE jax.jit call. Every
     atom's static kwargs (prefix, num_heads, target_hw, reshape dims,
     ...) are already baked in as closure constants at atom-construction
@@ -558,12 +558,12 @@ def compile_segment(atoms: List[AtomSpec]):
 
 
 class CompiledSegment(NamedTuple):
-    atoms: List[AtomSpec]
-    block_ids: List[str]
+    atoms: list[AtomSpec]
+    block_ids: list[str]
     fn: Any  # jitted segment_fn(params_by_block, ctx) -> ctx
 
 
-def compile_segments(atom_groups: List[List[AtomSpec]]) -> List[CompiledSegment]:
+def compile_segments(atom_groups: list[list[AtomSpec]]) -> list[CompiledSegment]:
     return [CompiledSegment(atoms, block_ids_in_order(atoms), compile_segment(atoms)) for atoms in atom_groups]
 
 
@@ -584,8 +584,8 @@ class SegmentedUnetState:
     and boundary-storage activations are two independent pools of
     device memory, both need releasing on eviction/teardown).
     """
-    def __init__(self, param_cache, pending_store: PendingValueStore, atoms: List[AtomSpec],
-                 segments: List["CompiledSegment"], spill_schedule: Dict[int, Tuple[str, ...]]):
+    def __init__(self, param_cache, pending_store: PendingValueStore, atoms: list[AtomSpec],
+                 segments: list[CompiledSegment], spill_schedule: dict[int, tuple[str, ...]]):
         self.param_cache = param_cache
         self.pending_store = pending_store
         self.atoms = atoms
@@ -661,11 +661,11 @@ def _build_segment_ctx(sample, timestep, encoder_hidden_states, added_cond_kwarg
 
 def unet_forward_segmented_multi(
     param_cache,
-    pending_stores: List[PendingValueStore],
-    segments: List[CompiledSegment],
-    spill_schedule: Dict[int, Tuple[str, ...]],
-    branches: List[Tuple[Any, Any, Any, Dict[str, Any]]],
-) -> List[Any]:
+    pending_stores: list[PendingValueStore],
+    segments: list[CompiledSegment],
+    spill_schedule: dict[int, tuple[str, ...]],
+    branches: list[tuple[Any, Any, Any, dict[str, Any]]],
+) -> list[Any]:
     """Run N independent (sample, timestep, encoder_hidden_states,
     added_cond_kwargs) branches through the segmented UNet TOGETHER, one
     segment at a time, instead of N separate back-to-back full passes.
@@ -736,12 +736,12 @@ def unet_forward_segmented_multi(
 def unet_forward_segmented(
     param_cache,
     pending_store: PendingValueStore,
-    segments: List[CompiledSegment],
-    spill_schedule: Dict[int, Tuple[str, ...]],
-    sample: "Any",
-    timestep: "Any",
-    encoder_hidden_states: "Any",
-    added_cond_kwargs: Dict[str, Any],
+    segments: list[CompiledSegment],
+    spill_schedule: dict[int, tuple[str, ...]],
+    sample: Any,
+    timestep: Any,
+    encoder_hidden_states: Any,
+    added_cond_kwargs: dict[str, Any],
 ):
     """Run the UNet forward pass as a sequence of fused segment calls —
     the N=1 case of ``unet_forward_segmented_multi``."""
@@ -756,12 +756,12 @@ def unet_forward_segmented_cfg(
     param_cache,
     pending_store_c: PendingValueStore,
     pending_store_u: PendingValueStore,
-    segments: List[CompiledSegment],
-    spill_schedule: Dict[int, Tuple[str, ...]],
-    sample_c: "Any", sample_u: "Any",
-    timestep_c: "Any", timestep_u: "Any",
-    encoder_hidden_states_c: "Any", encoder_hidden_states_u: "Any",
-    added_cond_kwargs_c: Dict[str, Any], added_cond_kwargs_u: Dict[str, Any],
+    segments: list[CompiledSegment],
+    spill_schedule: dict[int, tuple[str, ...]],
+    sample_c: Any, sample_u: Any,
+    timestep_c: Any, timestep_u: Any,
+    encoder_hidden_states_c: Any, encoder_hidden_states_u: Any,
+    added_cond_kwargs_c: dict[str, Any], added_cond_kwargs_u: dict[str, Any],
 ):
     """CFG-interleaved counterpart to ``unet_forward_segmented`` — the
     N=2 case of ``unet_forward_segmented_multi``: runs cond AND uncond

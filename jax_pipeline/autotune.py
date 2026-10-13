@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ log = logging.getLogger(__name__)
 #: extra peak/cumulative memory churn on exactly the hardware this
 #: system exists for -- see git history for a real-hardware OOM this
 #: caused when it was a naive 4th entry in this tuple.
-FUSION_LEVELS: Tuple[str, ...] = ("fine", "coarse", "whole")
+FUSION_LEVELS: tuple[str, ...] = ("fine", "coarse", "whole")
 
 _WARMUP_CALLS = 1
 _TIMED_CALLS = 2
@@ -99,10 +99,10 @@ def _free_vram_bytes(torch_device) -> int:
 
 
 def _benchmark_candidate(
-    level: str, params: Dict[str, Any], jax_device, latent_h: int, latent_w: int,
+    level: str, params: dict[str, Any], jax_device, latent_h: int, latent_w: int,
     batch: int, seq_len: int, torch_device_for_vram_query,
-    vram_budget_override: Optional[int] = None,
-) -> Optional[Tuple[int, float]]:
+    vram_budget_override: int | None = None,
+) -> tuple[int, float] | None:
     """Build ``level``'s UNet execution path fresh, run it a few times
     with empty tensors, measure (peak_vram_bytes, avg_seconds_per_call),
     then tear the whole thing down again. Returns None if this level
@@ -264,9 +264,9 @@ _SEGMENTED_REGRET_MAX_ATTEMPTS = 5
 
 
 def _benchmark_segmented_with_regret(
-    params: Dict[str, Any], jax_device, latent_h: int, latent_w: int,
+    params: dict[str, Any], jax_device, latent_h: int, latent_w: int,
     batch: int, seq_len: int, torch_device_for_vram_query,
-) -> Optional[Tuple[int, float]]:
+) -> tuple[int, float] | None:
     """Try the segmented candidate; if it fails to actually build/run,
     "regret" the budget the search used and try again with a smaller
     one, producing a more conservative (more, smaller segments) plan
@@ -328,7 +328,7 @@ def _benchmark_segmented_with_regret(
 
 
 def select_fusion_level(
-    candidates: Dict[str, Tuple[int, float]], free_vram_bytes: int,
+    candidates: dict[str, tuple[int, float]], free_vram_bytes: int,
     safety_factor: float = _VRAM_SAFETY_FACTOR,
 ) -> str:
     """Pick the FASTEST candidate whose (peak_vram * safety_factor) fits
@@ -343,7 +343,7 @@ def select_fusion_level(
 
 
 def autotune_unet(
-    params: Dict[str, Any], jax_device, torch_device_for_vram_query,
+    params: dict[str, Any], jax_device, torch_device_for_vram_query,
     latent_h: int, latent_w: int, batch: int, seq_len: int,
 ) -> str:
     """Return the fusion level ("fine"/"coarse"/"whole") to use for the
@@ -412,7 +412,7 @@ def autotune_unet(
             "falling back to benchmarking fine/coarse/whole with empty tensors...",
         )
         free_vram = model_management.get_free_memory(torch_device_for_vram_query)
-        stats: Dict[str, Tuple[int, float]] = {}
+        stats: dict[str, tuple[int, float]] = {}
         approx_total_bytes = sum(int(v.nbytes) for v in params.values())
 
         for level in FUSION_LEVELS:

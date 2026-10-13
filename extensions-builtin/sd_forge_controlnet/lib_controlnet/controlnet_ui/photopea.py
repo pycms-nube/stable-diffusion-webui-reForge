@@ -118,7 +118,7 @@ z"/>
 </svg>"""
 
 
-class Photopea(object):
+class Photopea:
     def __init__(self) -> None:
         self.modal = None
         self.triggers = []

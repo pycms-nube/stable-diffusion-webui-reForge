@@ -7,7 +7,6 @@ import functools
 import network
 
 import torch
-from typing import Union
 
 from modules import shared, sd_models, errors, scripts, devices
 from ldm_patched.modules.utils import load_torch_file
@@ -125,11 +124,11 @@ def restore_weights_backup(obj, field, weight):
     getattr(obj, field).copy_(weight)
 
 
-def network_restore_weights_from_backup(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.MultiheadAttention]):
+def network_restore_weights_from_backup(self: torch.nn.Conv2d | torch.nn.Linear | torch.nn.GroupNorm | torch.nn.LayerNorm | torch.nn.MultiheadAttention):
     pass
 
 
-def network_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.MultiheadAttention]):
+def network_apply_weights(self: torch.nn.Conv2d | torch.nn.Linear | torch.nn.GroupNorm | torch.nn.LayerNorm | torch.nn.MultiheadAttention):
     pass
 
 
@@ -137,7 +136,7 @@ def network_forward(org_module, input, original_forward):
     pass
 
 
-def network_reset_cached_weight(self: Union[torch.nn.Conv2d, torch.nn.Linear]):
+def network_reset_cached_weight(self: torch.nn.Conv2d | torch.nn.Linear):
     pass
 
 

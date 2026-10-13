@@ -1,5 +1,4 @@
 import os
-from typing import Optional, Tuple
 
 import cv2
 import torch
@@ -129,7 +128,7 @@ class ControlNetForForgeOfficial(scripts.Script):
             resize_mode: external_code.ResizeMode,
             preprocessor
     ) -> np.ndarray:
-        a1111_mask_image: Optional[Image.Image] = getattr(p, "image_mask", None)
+        a1111_mask_image: Image.Image | None = getattr(p, "image_mask", None)
         is_only_masked_inpaint = (
                 issubclass(type(p), StableDiffusionProcessingImg2Img) and
                 p.inpaint_full_res and
@@ -266,7 +265,7 @@ class ControlNetForForgeOfficial(scripts.Script):
         return image_list, resize_mode
 
     @staticmethod
-    def get_target_dimensions(p: StableDiffusionProcessing) -> Tuple[int, int, int, int]:
+    def get_target_dimensions(p: StableDiffusionProcessing) -> tuple[int, int, int, int]:
         """Returns (h, w, hr_h, hr_w)."""
         h = align_dim_latent(p.height)
         w = align_dim_latent(p.width)
