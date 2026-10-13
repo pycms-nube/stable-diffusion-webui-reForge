@@ -8,7 +8,7 @@ clean-fid
 diskcache
 einops
 facexlib
-fastapi>=0.90.1
+fastapi>=0.143.0
 gradio==3.41.2
 inflection
 jsonmerge
@@ -19,20 +19,20 @@ omegaconf
 open-clip-torch
 
 piexif
-protobuf==7.35.0
+protobuf==7.36.2
 psutil
 pytorch_lightning
 requests
 resize-right
 
 safetensors
-scikit-image>=0.19
+scikit-image>=0.26.0
 tomesd
 torch
 torchdiffeq
 torchsde
-transformers==4.44.0
-pillow-avif-plugin==1.4.3
+transformers==4.57.6
+pillow-avif-plugin==1.6.0
 
 # Optional: Comfy Kitchen (comfy-kitchen) enables INT8 attention and quantized
 # GEMM kernels ported from ComfyUI (PR #15479 / #16154). NOT installed by
