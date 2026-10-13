@@ -71,7 +71,6 @@ time.
 
 from __future__ import annotations
 
-import functools
 import logging
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
@@ -712,7 +711,7 @@ def unet_forward_segmented_multi(
         # consumed within this same segment stays purely local to its own
         # trace (never needs to leave ctx at all).
         needed_from_store = consumed_within - produced_within
-        for ctx, store in zip(ctxs, pending_stores):
+        for ctx, store in zip(ctxs, pending_stores, strict=True):
             for value_id in needed_from_store:
                 ctx["values"][value_id] = store.get(value_id)
 
@@ -722,7 +721,7 @@ def unet_forward_segmented_multi(
         params_by_block = {bid: param_cache.get(bid) for bid in segment.block_ids}
         ctxs = [segment.fn(params_by_block, ctx) for ctx in ctxs]
 
-        for ctx, store in zip(ctxs, pending_stores):
+        for ctx, store in zip(ctxs, pending_stores, strict=True):
             still_pending = dict(ctx["values"])
             ctx["values"] = {}
             for value_id, arr in still_pending.items():

@@ -278,7 +278,6 @@ def trace_atom_activation_bytes(
     from jax_pipeline.autotune import _free_vram_bytes, _empty_unet_inputs
     from jax_pipeline.unet import _sinusoidal_embedding, _TIME_DIM as _TD
 
-    block_ids = segs.block_ids_in_order(atoms)
     partitioned = segs.partition_params_for_atoms(flat_params, atoms)
     cache = block_cache_mod.BlockParamCache(jax_device, budget_bytes=None)
     cache.load(partitioned)
@@ -308,7 +307,7 @@ def trace_atom_activation_bytes(
             "time_ids": added["time_ids"].astype(jnp.float32),
             "values": {},
         }
-        for idx, (atom, segment) in enumerate(zip(atoms, compiled)):
+        for idx, (atom, segment) in enumerate(zip(atoms, compiled, strict=True)):
             needed = set(atom.consumes) - set(atom.produces)
             for vid in needed:
                 if vid in ctx["values"]:

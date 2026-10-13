@@ -204,7 +204,7 @@ def _benchmark_candidate(
 
         phase = f"timed ({_TIMED_CALLS} call(s))"
         t0 = time.perf_counter()
-        for i in range(_TIMED_CALLS):
+        for _ in range(_TIMED_CALLS):
             out = call()
             jax.block_until_ready(out)
         avg_seconds = (time.perf_counter() - t0) / _TIMED_CALLS

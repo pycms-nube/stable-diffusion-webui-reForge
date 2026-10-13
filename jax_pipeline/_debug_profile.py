@@ -45,7 +45,6 @@ import json
 import logging
 import os
 import tempfile
-import time
 
 log = logging.getLogger(__name__)
 

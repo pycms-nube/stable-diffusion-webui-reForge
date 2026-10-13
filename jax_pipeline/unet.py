@@ -56,6 +56,7 @@ verbatim from mlx_pipeline/unet.py rather than re-derived:
 
 from __future__ import annotations
 
+import functools
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -689,7 +690,6 @@ unet_forward_jit = jax.jit(unet_forward)
 # non-64-multiple resolutions), are copied verbatim from unet_forward
 # above.
 
-import functools
 
 
 def _timed_jit(jitted_fn):
@@ -775,7 +775,6 @@ def build_block_ids() -> List[str]:
     host memory, never staged to device since nothing ever calls
     ``cache.get("class_embedding")``.
     """
-    ch = _BLOCK_OUT_CHANNELS
     ids = ["time_embedding", "add_embedding", "class_embedding", "conv_in"]
 
     # down_blocks.0: pure-resnet, no attention
